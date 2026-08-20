@@ -30,3 +30,10 @@ frontend/dist/
 # OS
 .DS_Store
 Thumbs.db
+
+# Generated logs
+frontend/*_log.txt
+frontend/*_out.txt
+
+# TypeScript build cache
+*.tsbuildinfo
