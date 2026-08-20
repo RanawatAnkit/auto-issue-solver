@@ -1,0 +1,6 @@
+﻿
+> auto-issue-solver-dashboard@0.0.0 build
+> tsc -b && vite build
+
+src/pages/AgentRunDetails.tsx(2,21): error TS6133: 'Link' is declared but its value is never read.
+src/pages/AgentRuns.tsx(6,10): error TS6133: 'formatDistanceToNow' is declared but its value is never read.

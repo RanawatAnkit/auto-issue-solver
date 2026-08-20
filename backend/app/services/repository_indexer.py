@@ -1,0 +1,54 @@
+import logging
+import os
+from sqlalchemy.orm import Session
+from app.models.domain import CodeChunk, Repository
+from app.services.repository_scanner import RepositoryScanner
+from app.services.code_chunker import CodeChunker
+from app.services.embedding_service import EmbeddingService
+
+logger = logging.getLogger(__name__)
+
+class RepositoryIndexer:
+    def __init__(self, db: Session):
+        self.db = db
+        self.scanner = RepositoryScanner()
+        self.chunker = CodeChunker()
+        self.embedder = EmbeddingService()
+
+    def index_repository(self, repository_id: int, workspace_path: str):
+        logger.info(f"Triggering pipeline Indexing logic for REP_ID: {repository_id}")
+        
+        # Eliminate duplicates dynamically before writing the new iteration over the repository tree.
+        self.db.query(CodeChunk).filter(CodeChunk.repository_id == repository_id).delete()
+        self.db.commit()
+
+        files = self.scanner.scan(workspace_path)
+        logger.info(f"Scanner processed mapping paths, total candidates: {len(files)}")
+
+        raw_chunks = []
+        for f in files:
+            full_path = os.path.join(workspace_path, f)
+            raw_chunks.extend(self.chunker.chunk_file(full_path, f))
+
+        if not raw_chunks:
+            return
+
+        logger.info(f"Targeting embeddings sequence over {len(raw_chunks)} isolated chunks...")
+        texts_to_embed = [c["content"] for c in raw_chunks]
+        embeddings = self.embedder.generate_embeddings(texts_to_embed)
+
+        db_chunks = []
+        for c, emb in zip(raw_chunks, embeddings):
+            db_chunks.append(
+                CodeChunk(
+                    repository_id=repository_id,
+                    file_path=c["file_path"],
+                    chunk_index=c["chunk_index"],
+                    content=c["content"],
+                    embedding=emb
+                )
+            )
+        
+        self.db.add_all(db_chunks)
+        self.db.commit()
+        logger.info("Indexing execution pipeline cleanly saved to DB bounds.")
