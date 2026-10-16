@@ -79,3 +79,31 @@ def test_gemini_invalid_structured_output_rejected(mock_openai, mock_settings):
     svc = LLMService()
     with pytest.raises(RuntimeError, match="maximum retry bounds exceeded"):
         svc.generate_structured("sys", "user", IssueAnalysis)
+
+@patch("app.services.llm_service.settings")
+@patch("app.services.llm_service.openai.OpenAI")
+def test_ollama_provider_selection(mock_openai, mock_settings):
+    mock_settings.LLM_PROVIDER = "ollama"
+    mock_settings.OLLAMA_MODEL = "qwen2.5-coder:7b"
+    mock_settings.OLLAMA_BASE_URL = "http://localhost:11434/v1"
+    mock_settings.MAX_LLM_RETRIES = 1
+    
+    mock_client = MagicMock()
+    mock_openai.return_value = mock_client
+    
+    mock_parsed_msg = MagicMock()
+    mock_parsed_msg.message.parsed = IssueAnalysis(
+        problem_summary="Local LLM summary",
+        expected_behavior="Expected",
+        current_behavior="Current",
+        affected_areas=["main.py"],
+        constraints=[]
+    )
+    mock_client.beta.chat.completions.parse.return_value.choices = [mock_parsed_msg]
+    
+    svc = LLMService()
+    result = svc.generate_structured("sys", "user", IssueAnalysis)
+    
+    mock_openai.assert_called_once_with(api_key="ollama", base_url="http://localhost:11434/v1")
+    assert result.problem_summary == "Local LLM summary"
+    assert svc.model == "qwen2.5-coder:7b"

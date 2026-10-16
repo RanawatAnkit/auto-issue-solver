@@ -36,9 +36,10 @@ class GitHubService:
         with open(settings.GITHUB_APP_PRIVATE_KEY, 'r', encoding='utf-8') as f:
             private_key = f.read()
 
+        now = int(time.time())
         encoded_jwt = jwt.encode({
-            'iat': int(time.time()) - 60,
-            'exp': int(time.time()) + (10 * 60),
+            'iat': now - 60,
+            'exp': now + (8 * 60),
             'iss': settings.GITHUB_APP_ID
         }, private_key, algorithm='RS256')
         
@@ -49,7 +50,10 @@ class GitHubService:
         
         if res.status_code == 200:
             return res.json()['id']
-        raise ValueError(f"GitHub App installation not found for repository {repo_full_name}. Status: {res.status_code}")
+        if res.status_code == 404:
+            owner = repo_full_name.split('/')[0] if '/' in repo_full_name else repo_full_name
+            raise ValueError(f"GitHub App is not installed on account '{owner}' or does not have access to '{repo_full_name}'. Please install it at https://github.com/apps/auto-issue-solver-college/installations/new")
+        raise ValueError(f"GitHub App installation lookup failed for repository {repo_full_name}. Status: {res.status_code}")
 
     def get_installation_token(self):
         return self.auth.token

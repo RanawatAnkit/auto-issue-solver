@@ -51,7 +51,7 @@ const IssueDetails: React.FC = () => {
             } else if (err.response?.status === 403) {
                 setSolveError("Unauthorized repository access.");
             } else {
-                setSolveError("Internal server error. Failed to dispatch the auto-solver.");
+                setSolveError(err.response?.data?.detail || "Internal server error. Failed to dispatch the auto-solver.");
             }
             setSolveLoading(false);
         }

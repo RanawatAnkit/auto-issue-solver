@@ -14,12 +14,16 @@ class LLMService:
         
         if self.provider == "gemini":
             self.api_key = settings.GEMINI_API_KEY
-            self.model = getattr(settings, "GEMINI_MODEL", "gemini-1.5-pro")
+            self.model = getattr(settings, "GEMINI_MODEL", "gemini-3.6-flash")
             self.base_url = "https://generativelanguage.googleapis.com/v1beta/openai/"
         elif self.provider == "openai":
             self.api_key = settings.OPENAI_API_KEY
             self.model = getattr(settings, "OPENAI_MODEL", "gpt-4o")
             self.base_url = None
+        elif self.provider in ("ollama", "local"):
+            self.api_key = "ollama"
+            self.model = getattr(settings, "OLLAMA_MODEL", "qwen2.5-coder:7b")
+            self.base_url = getattr(settings, "OLLAMA_BASE_URL", "http://localhost:11434/v1")
         else:
             raise NotImplementedError(f"LLM Provider {self.provider} not supported.")
     

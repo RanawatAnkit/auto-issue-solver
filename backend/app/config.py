@@ -38,6 +38,8 @@ class Settings(BaseSettings):
     OPENAI_API_KEY: str | None = None
     GEMINI_API_KEY: str | None = None
     GEMINI_MODEL: str = "gemini-1.5-pro"
+    OLLAMA_BASE_URL: str = "http://localhost:11434/v1"
+    OLLAMA_MODEL: str = "qwen2.5-coder:7b"
 
     model_config = SettingsConfigDict(
         env_file=os.path.join(os.path.dirname(os.path.dirname(__file__)), "../.env"),
