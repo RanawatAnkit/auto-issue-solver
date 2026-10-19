@@ -13,7 +13,13 @@ RUN apt-get update && apt-get install -y \
 # Set up working directory
 WORKDIR /workspace
 
-# Install common test runners and tooling
+# Set PYTHONPATH so tests can import from /workspace regardless of test runner invocation
+ENV PYTHONPATH=/workspace
+
+# Install common test runners and tooling. Repository dependencies are NOT baked
+# in here: the test runner builds a cached per-repository image from each repo's
+# requirements files / pyproject.toml, so a repo that forgets to declare a
+# dependency fails visibly instead of passing by accident.
 RUN pip install --no-cache-dir \
     pytest \
     pytest-cov \

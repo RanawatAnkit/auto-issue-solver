@@ -6,37 +6,69 @@ from app.db.base import Base
 import enum
 
 class AgentStateEnum(str, enum.Enum):
-    # Legacy states retaining Alembic compat
+    # Core intake & analysis states
+    QUEUED = "QUEUED"
     RECEIVED = "RECEIVED"
-    ANALYZING_ISSUE = "ANALYZING_ISSUE"
-    ANALYZING_REPOSITORY = "ANALYZING_REPOSITORY"
-    FIXING = "FIXING"
-    CREATING_PR = "CREATING_PR"
-    COMPLETED = "COMPLETED"
-    FAILED = "FAILED"
-    
-    # Phase 7 and new states
     PENDING = "PENDING"
     ANALYZING = "ANALYZING"
+    ANALYZING_ISSUE = "ANALYZING_ISSUE"
+    ANALYZING_REPOSITORY = "ANALYZING_REPOSITORY"
     RETRIEVING_CONTEXT = "RETRIEVING_CONTEXT"
     PLANNING = "PLANNING"
     PLAN_READY = "PLAN_READY"
+    
+    # Implementation & test states
     CODING = "CODING"
-    TESTING = "TESTING"
+    PATCH_APPLIED = "PATCH_APPLIED"
     CODE_CHANGED = "CODE_CHANGED"
+    TESTING = "TESTING"
     TEST_FAILED = "TEST_FAILED"
+    
+    # Autonomous repair loop states
     ANALYZING_FAILURE = "ANALYZING_FAILURE"
     REPAIR_PLANNING = "REPAIR_PLANNING"
     REPAIRING = "REPAIRING"
     TESTING_REPAIR = "TESTING_REPAIR"
     REPAIR_SUCCESS = "REPAIR_SUCCESS"
     REPAIR_EXHAUSTED = "REPAIR_EXHAUSTED"
-    PR_CREATION_FAILED = "PR_CREATION_FAILED"
-    PUSH_FAILED = "PUSH_FAILED"
-    COMMIT_FAILED = "COMMIT_FAILED"
-    PR_CREATED = "PR_CREATED"
-    PUSHING = "PUSHING"
+    
+    # Validation & Git finalization states
+    VALIDATING = "VALIDATING"
+    BRANCH_CREATED = "BRANCH_CREATED"
     COMMITTING = "COMMITTING"
+    COMMITTED = "COMMITTED"
+    PUSHING = "PUSHING"
+    PUSHED = "PUSHED"
+    CREATING_PR = "CREATING_PR"
+    PR_CREATED = "PR_CREATED"
+    COMPLETED = "COMPLETED"
+    FIXING = "FIXING"
+    
+    # Terminal failure and cancellation states
+    FAILED = "FAILED"
+    VALIDATION_FAILED = "VALIDATION_FAILED"
+    BRANCH_CREATION_FAILED = "BRANCH_CREATION_FAILED"
+    COMMIT_FAILED = "COMMIT_FAILED"
+    PUSH_FAILED = "PUSH_FAILED"
+    PR_CREATION_FAILED = "PR_CREATION_FAILED"
+    CANCELLED = "CANCELLED"
+
+
+# States in which a run has finished and no worker will touch it again.
+# PLAN_READY is terminal when ENABLE_CODE_MUTATION is off.
+TERMINAL_AGENT_STATES = [
+    AgentStateEnum.COMPLETED,
+    AgentStateEnum.FAILED,
+    AgentStateEnum.PR_CREATED,
+    AgentStateEnum.REPAIR_EXHAUSTED,
+    AgentStateEnum.VALIDATION_FAILED,
+    AgentStateEnum.BRANCH_CREATION_FAILED,
+    AgentStateEnum.COMMIT_FAILED,
+    AgentStateEnum.PUSH_FAILED,
+    AgentStateEnum.PR_CREATION_FAILED,
+    AgentStateEnum.CANCELLED,
+    AgentStateEnum.PLAN_READY,
+]
 
 
 class User(Base):
@@ -107,6 +139,9 @@ class AgentRun(Base):
     modified_files = Column(JSON, nullable=True)
     diff_summary = Column(Text, nullable=True)
     test_result = Column(JSON, nullable=True)
+    # Test outcome on the unmodified checkout, used to tell pre-existing or
+    # environment failures apart from failures caused by the generated change.
+    baseline_test_result = Column(JSON, nullable=True)
 
     # Phase 7 additions
     repair_attempt = Column(Integer, default=0)

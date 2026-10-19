@@ -1,12 +1,14 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.api import health, webhooks, issues, repositories, agent_runs, pull_requests, auth
+from app.config import settings
 
 app = FastAPI(title="Auto Issue Solver API")
 
+_frontend = settings.FRONTEND_URL.rstrip("/")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_origins=sorted({_frontend, _frontend.replace("localhost", "127.0.0.1")}),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

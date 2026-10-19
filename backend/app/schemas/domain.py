@@ -1,5 +1,6 @@
-from pydantic import BaseModel
-from typing import Optional, List
+import enum
+from pydantic import BaseModel, field_validator
+from typing import Optional, List, Any
 from datetime import datetime
 
 class UserBase(BaseModel):
@@ -52,16 +53,20 @@ class AgentRunBase(BaseModel):
     status: str
     current_step: Optional[str] = None
     error_message: Optional[str] = None
-    retry_count: int = 0
+    retry_count: Optional[int] = 0
+
+    @field_validator("status", mode="before")
+    @classmethod
+    def _enum_value(cls, v):
+        # Serialize the persisted enum as its plain value, e.g. "PLAN_READY".
+        return v.value if isinstance(v, enum.Enum) else v
 
 class AgentRunResponse(AgentRunBase):
     id: int
-    started_at: datetime
+    started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
     class Config:
         from_attributes = True
-
-from typing import Any
 
 class AgentRunDetailResponse(AgentRunResponse):
     issue_analysis: Optional[Any] = None
@@ -69,12 +74,23 @@ class AgentRunDetailResponse(AgentRunResponse):
     modified_files: Optional[Any] = None
     diff_summary: Optional[str] = None
     test_result: Optional[Any] = None
-    repair_attempt: int = 0
+    baseline_test_result: Optional[Any] = None
+    repair_attempt: Optional[int] = 0
     failure_analysis: Optional[Any] = None
     repair_plan: Optional[Any] = None
     termination_reason: Optional[str] = None
-    total_runtime: float = 0.0
+    total_runtime: Optional[float] = 0.0
     repair_history: Optional[Any] = None
+
+class AgentActionResponse(BaseModel):
+    id: int
+    action_type: str
+    input_data: Optional[str] = None
+    output_data: Optional[str] = None
+    success: Optional[bool] = None
+    created_at: Optional[datetime] = None
+    class Config:
+        from_attributes = True
 
 class PullRequestResponse(BaseModel):
     id: int

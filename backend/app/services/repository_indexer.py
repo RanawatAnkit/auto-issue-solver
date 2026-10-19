@@ -15,40 +15,32 @@ class RepositoryIndexer:
         self.chunker = CodeChunker()
         self.embedder = EmbeddingService()
 
-    def index_repository(self, repository_id: int, workspace_path: str):
-        logger.info(f"Triggering pipeline Indexing logic for REP_ID: {repository_id}")
-        
-        # Eliminate duplicates dynamically before writing the new iteration over the repository tree.
-        self.db.query(CodeChunk).filter(CodeChunk.repository_id == repository_id).delete()
-        self.db.commit()
+    def index_repository(self, repository_id: int, workspace_path: str) -> int:
+        """Re-index a checkout and return the number of chunks stored."""
+        logger.info(f"Indexing repository {repository_id} from {workspace_path}")
 
         files = self.scanner.scan(workspace_path)
-        logger.info(f"Scanner processed mapping paths, total candidates: {len(files)}")
+        logger.info(f"Scanner found {len(files)} indexable files")
 
         raw_chunks = []
         for f in files:
             full_path = os.path.join(workspace_path, f)
             raw_chunks.extend(self.chunker.chunk_file(full_path, f))
 
-        if not raw_chunks:
-            return
+        # Embed before touching the existing index so a failure leaves the old one intact.
+        embeddings = self.embedder.generate_embeddings([c["content"] for c in raw_chunks]) if raw_chunks else []
 
-        logger.info(f"Targeting embeddings sequence over {len(raw_chunks)} isolated chunks...")
-        texts_to_embed = [c["content"] for c in raw_chunks]
-        embeddings = self.embedder.generate_embeddings(texts_to_embed)
-
-        db_chunks = []
-        for c, emb in zip(raw_chunks, embeddings):
-            db_chunks.append(
-                CodeChunk(
-                    repository_id=repository_id,
-                    file_path=c["file_path"],
-                    chunk_index=c["chunk_index"],
-                    content=c["content"],
-                    embedding=emb
-                )
+        self.db.query(CodeChunk).filter(CodeChunk.repository_id == repository_id).delete()
+        self.db.add_all([
+            CodeChunk(
+                repository_id=repository_id,
+                file_path=c["file_path"],
+                chunk_index=c["chunk_index"],
+                content=c["content"],
+                embedding=emb
             )
-        
-        self.db.add_all(db_chunks)
+            for c, emb in zip(raw_chunks, embeddings)
+        ])
         self.db.commit()
-        logger.info("Indexing execution pipeline cleanly saved to DB bounds.")
+        logger.info(f"Stored {len(raw_chunks)} chunks for repository {repository_id}")
+        return len(raw_chunks)

@@ -7,6 +7,7 @@ from app.services.patch_service import PatchService
 from app.sandbox.test_runner import TestRunner
 
 def test_coding_agent_schema(monkeypatch):
+    monkeypatch.setattr("app.config.settings.LLM_PROVIDER", "openai")
     monkeypatch.setattr("app.config.settings.OPENAI_API_KEY", "mock")
     from app.agents.coding_agent import CodingAgent
     agent = CodingAgent()

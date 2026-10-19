@@ -37,3 +37,5 @@ frontend/*_out.txt
 
 # TypeScript build cache
 *.tsbuildinfo
+# Private keys
+*.pem

@@ -1,11 +1,12 @@
 import React, { useEffect, useState } from 'react';
-import { getRepositories, connectRepository } from '../services/api';
+import { getRepositories, connectRepository, errorMessage, errorStatus } from '../services/api';
+import { Repository } from '../types/domain';
 import { Database, Plus, X, ArrowRight, Check } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 
 export const Repositories: React.FC = () => {
     const navigate = useNavigate();
-    const [repos, setRepos] = useState<any[]>([]);
+    const [repos, setRepos] = useState<Repository[]>([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
 
@@ -21,8 +22,8 @@ export const Repositories: React.FC = () => {
         try {
             const data = await getRepositories();
             setRepos(data);
-        } catch (err: any) {
-            setError(err.message || 'Failed to fetch repositories');
+        } catch (err) {
+            setError(errorMessage(err, 'Failed to fetch repositories'));
         } finally {
             setLoading(false);
         }
@@ -50,14 +51,14 @@ export const Repositories: React.FC = () => {
             setRepoFullName("");
             setModalStep(4);
             await loadRepositories();
-        } catch (err: any) {
-            if (err.response) {
-                const status = err.response.status;
+        } catch (err) {
+            const status = errorStatus(err);
+            if (status !== undefined) {
                 if (status === 401) setConnectError("Your GitHub session has expired. Please log in again.");
                 else if (status === 403) setConnectError("The GitHub App does not have permission to access this repository. Please check the App installation and repository permissions.");
                 else if (status === 404) setConnectError("Auto Issue Solver College is not installed on this repository. Please install the GitHub App and select this repository.");
                 else if (status === 409) setConnectError("This repository is already connected.");
-                else setConnectError(err.response.data?.detail || "Unable to connect this repository. Please try again.");
+                else setConnectError(errorMessage(err, "Unable to connect this repository. Please try again."));
             } else {
                 setConnectError("Unable to connect this repository. Please try again.");
             }

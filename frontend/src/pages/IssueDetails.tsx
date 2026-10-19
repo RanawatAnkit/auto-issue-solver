@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
-import { getRepositoryIssue, solveIssue } from '../services/api';
+import { getRepositoryIssue, solveIssue, errorMessage, errorStatus } from '../services/api';
 import { GitHubIssue } from '../types/domain';
 import { ArrowLeft, Clock, CircleDot, Activity } from 'lucide-react';
 
@@ -21,13 +21,13 @@ const IssueDetails: React.FC = () => {
             try {
                 const data = await getRepositoryIssue(repositoryId, issueNumber);
                 setIssue(data);
-            } catch (err: any) {
-                if (err.response?.status === 401) {
+            } catch (err) {
+                if (errorStatus(err) === 401) {
                     navigate('/login');
-                } else if (err.response?.status === 404) {
+                } else if (errorStatus(err) === 404) {
                     setError("Issue not found or inaccessible.");
                 } else {
-                    setError(err.message || 'Failed to fetch issue details');
+                    setError(errorMessage(err, 'Failed to fetch issue details'));
                 }
             } finally {
                 setLoading(false);
@@ -43,15 +43,15 @@ const IssueDetails: React.FC = () => {
         try {
             const resp = await solveIssue(repositoryId, issueNumber);
             navigate(`/agent-runs/${resp.run_id}`);
-        } catch (err: any) {
-            if (err.response?.status === 409) {
-                setSolveError("An Auto-Solver run is already active for this issue.");
-            } else if (err.response?.status === 401) {
+        } catch (err) {
+            if (errorStatus(err) === 401) {
                 navigate('/login');
-            } else if (err.response?.status === 403) {
+            } else if (errorStatus(err) === 403) {
                 setSolveError("Unauthorized repository access.");
             } else {
-                setSolveError("Internal server error. Failed to dispatch the auto-solver.");
+                // 409 (run already active), 502 (GitHub App access) and 503 (queue
+                // unavailable) all carry an actionable explanation from the API.
+                setSolveError(errorMessage(err, "Failed to dispatch the auto-solver."));
             }
             setSolveLoading(false);
         }
@@ -107,7 +107,8 @@ const IssueDetails: React.FC = () => {
 
                 <div className="p-8 bg-slate-900/50 prose prose-invert max-w-none text-slate-300 border-b border-slate-800">
                     {issue.body ? (
-                        <div dangerouslySetInnerHTML={{ __html: issue.body.replace(/\n/g, '<br />') }} />
+                        // Issue text is untrusted user input: render it as text, never as HTML.
+                        <div className="whitespace-pre-wrap break-words">{issue.body}</div>
                     ) : (
                         <p className="italic text-slate-500">No description provided for this issue.</p>
                     )}

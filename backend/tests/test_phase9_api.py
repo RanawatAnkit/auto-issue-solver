@@ -70,3 +70,11 @@ def test_get_pull_request(client):
     response = client.get(f"/pull-requests/{pr.id}")
     assert response.status_code == 200
     assert response.json()["branch_name"] == "c"
+
+def test_terminal_agent_states_includes_plan_ready():
+    from app.api.repositories import TERMINAL_AGENT_STATES
+    from app.models.domain import AgentStateEnum
+    assert AgentStateEnum.PLAN_READY in TERMINAL_AGENT_STATES
+    # Ensure completed planning runs are recognized as terminal for background pipelines
+    assert AgentStateEnum.COMPLETED in TERMINAL_AGENT_STATES
+    assert AgentStateEnum.PR_CREATED in TERMINAL_AGENT_STATES
