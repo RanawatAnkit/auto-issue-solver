@@ -1,13 +1,6 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
 import { getMe, logout } from '../services/api';
-
-interface User {
-    id: number;
-    github_user_id: string;
-    github_login: string;
-    github_name: string | null;
-    github_avatar_url: string | null;
-}
+import { UserProfile as User } from '../types/domain';
 
 interface AuthContextType {
     user: User | null;
@@ -54,6 +47,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     );
 };
 
+// Exporting the hook next to its provider is the conventional pattern for contexts.
+// eslint-disable-next-line react-refresh/only-export-components
 export const useAuth = () => {
     const context = useContext(AuthContext);
     if (context === undefined) {

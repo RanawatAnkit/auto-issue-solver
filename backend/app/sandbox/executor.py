@@ -37,16 +37,24 @@ class SandboxExecutor:
                 nano_cpus=int(getattr(settings, "SANDBOX_CPU_LIMIT", 1) * 1e9),
                 network_mode='none',
                 privileged=False,
+                cap_drop=["ALL"],
+                security_opt=["no-new-privileges"],
+                pids_limit=512,
+                labels={"auto-issue-solver": "sandbox"},
                 auto_remove=False
             )
-            
+
             try:
                 result = container.wait(timeout=timeout)
                 exit_code = result.get("StatusCode", 1)
-                msgs = container.logs().decode('utf-8')
-                return exit_code, msgs, ""
+                stdout = container.logs(stdout=True, stderr=False).decode('utf-8', errors='replace')
+                stderr = container.logs(stdout=False, stderr=True).decode('utf-8', errors='replace')
+                return exit_code, stdout, stderr
             except Exception as wait_err:
-                container.kill()
+                try:
+                    container.kill()
+                except Exception:
+                    pass
                 return 124, "", f"Timeout/Error: {wait_err}"
             finally:
                 container.remove(force=True)

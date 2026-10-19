@@ -21,6 +21,28 @@ def test_planner_validation_accepts_existing_retrieval():
     # Passed safely since "existing.py" exists in available_files!
     planner.validate_plan(p, available_files=["existing.py"])
 
+def test_planner_reconciles_prefixed_test_path():
+    planner = PlannerAgent()
+    p = SolutionPlan(
+        summary="fix", 
+        affected_files=[{"path": "app/tests/test_tasks.py", "operation": "modify", "reason": "missing", "symbols": [], "planned_changes": []}],
+        tests=[], dependencies=[], risks=[], assumptions=[], acceptance_criteria=["done"]
+    )
+    # Must reconcile "app/tests/test_tasks.py" to "tests/test_tasks.py" and succeed
+    planner.validate_plan(p, available_files=["tests/test_tasks.py", "app/main.py"])
+    assert p.affected_files[0].path == "tests/test_tasks.py"
+
+def test_planner_reconciles_bare_filename():
+    planner = PlannerAgent()
+    p = SolutionPlan(
+        summary="fix", 
+        affected_files=[{"path": "test_tasks.py", "operation": "modify", "reason": "missing", "symbols": [], "planned_changes": []}],
+        tests=[], dependencies=[], risks=[], assumptions=[], acceptance_criteria=["done"]
+    )
+    planner.validate_plan(p, available_files=["tests/test_tasks.py", "app/main.py"])
+    assert p.affected_files[0].path == "tests/test_tasks.py"
+
+
 def test_planner_validation_rejects_missing_contexts():
     planner = PlannerAgent()
     p = SolutionPlan(

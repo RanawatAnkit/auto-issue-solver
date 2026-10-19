@@ -1,10 +1,11 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from app.db.session import get_db
-from app.models.domain import Repository, User, Issue, AgentRun, AgentStateEnum
+from app.models.domain import Repository, User, Issue, AgentRun, AgentStateEnum, TERMINAL_AGENT_STATES
 from app.schemas.domain import RepositoryResponse, IssueResponse
 from app.api.auth import get_current_user
-from app.services.github_service import GitHubService
+from app.services.github_service import GitHubService, GitWorkspace
+from app.services.run_service import start_agent_run, ActiveRunExists, EnqueueFailed
 from typing import List, Dict, Any
 from pydantic import BaseModel
 
@@ -83,28 +84,24 @@ def get_issue(repository_id: int, number: int, db: Session = Depends(get_db), cu
         
     return {"id": i.id, "number": i.number, "title": i.title, "body": i.body, "labels": [l.name for l in i.labels], "state": i.state, "created_at": i.created_at.isoformat()}
 
-TERMINAL_AGENT_STATES = [
-    AgentStateEnum.COMPLETED,
-    AgentStateEnum.FAILED,
-    AgentStateEnum.PR_CREATED,
-    AgentStateEnum.REPAIR_EXHAUSTED,
-    AgentStateEnum.PR_CREATION_FAILED,
-    AgentStateEnum.PUSH_FAILED,
-    AgentStateEnum.COMMIT_FAILED
-]
-
 @router.post("/{repository_id}/issues/{number}/solve")
 def solve_issue(repository_id: int, number: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     repo = db.query(Repository).filter(Repository.id == repository_id, Repository.user_id == current_user.id).first()
     if not repo: raise HTTPException(status_code=404, detail="Repository not found")
-    
-    inst_id = GitHubService.get_installation_id_for_repo(repo.full_name)
-    gh = GitHubService(installation_id=inst_id)
+
+    try:
+        inst_id = GitHubService.get_installation_id_for_repo(repo.full_name)
+        gh = GitHubService(installation_id=inst_id)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"GitHub App access failed for {repo.full_name}: {e}")
     try:
         gh_issue = gh.get_issue(repo.full_name, number)
     except Exception:
         raise HTTPException(status_code=404, detail="Issue not found on GitHub")
-        
+    if getattr(gh_issue, "pull_request", None):
+        raise HTTPException(status_code=400, detail=f"#{number} is a pull request, not an issue.")
+
+    labels = ",".join(l.name for l in (gh_issue.labels or []))
     issue = db.query(Issue).filter(Issue.repository_id == repo.id, Issue.number == number).first()
     if not issue:
         issue = Issue(
@@ -113,48 +110,51 @@ def solve_issue(repository_id: int, number: int, db: Session = Depends(get_db), 
             number=gh_issue.number,
             title=gh_issue.title,
             body=gh_issue.body,
-            state=gh_issue.state
+            state=gh_issue.state,
+            labels=labels,
         )
         db.add(issue)
-        db.commit()
-        db.refresh(issue)
-        
-    active_run = db.query(AgentRun).filter(
-        AgentRun.issue_id == issue.id,
-        AgentRun.status.notin_(TERMINAL_AGENT_STATES)
-    ).first()
-    
-    if active_run:
-        raise HTTPException(status_code=409, detail="An AgentRun is already active for this issue.")
-        
-    new_run = AgentRun(
-        issue_id=issue.id,
-        status=AgentStateEnum.RECEIVED
-    )
-    db.add(new_run)
+    else:
+        # GitHub is the source of truth; the issue may have been edited since the last run.
+        issue.title = gh_issue.title
+        issue.body = gh_issue.body
+        issue.state = gh_issue.state
+        issue.labels = labels
     db.commit()
-    db.refresh(new_run)
-    
-    # Enqueue existing worker pipeline purely structurally preserving Phase 1-9
+    db.refresh(issue)
+
     try:
-        from app.services.queue_service import enqueue_issue_job
-        enqueue_issue_job({"agent_run_id": new_run.id, "installation_id": inst_id})
-    except Exception as e:
-        # Fallback ignores redis explicitly protecting sync validations dynamically safely!
-        pass
-        
+        new_run = start_agent_run(db, issue, inst_id)
+    except ActiveRunExists as e:
+        raise HTTPException(status_code=409, detail=f"AgentRun {e.run.id} is already active for this issue ({e.run.status.value}).")
+    except EnqueueFailed as e:
+        raise HTTPException(status_code=503, detail=str(e))
+
     return {"run_id": new_run.id, "status": "queued"}
 
 from app.services.repository_indexer import RepositoryIndexer
 from app.services.code_retriever import CodeRetriever
 
 @router.post("/{repository_id}/index")
-def index_repo(repository_id: int, workspace_path: str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+def index_repo(repository_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    # Index a fresh clone of the repository. (This used to accept an arbitrary
+    # server-side path from the client, which allowed indexing any local directory.)
     repo = db.query(Repository).filter(Repository.id == repository_id, Repository.user_id == current_user.id).first()
     if not repo: raise HTTPException(status_code=404, detail="Repository not found")
-    reindex = RepositoryIndexer(db)
-    reindex.index_repository(repository_id, workspace_path)
-    return {"status": "indexed"}
+    try:
+        inst_id = GitHubService.get_installation_id_for_repo(repo.full_name)
+        token = GitHubService(installation_id=inst_id).get_installation_token()
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"GitHub App access failed for {repo.full_name}: {e}")
+    workspace = GitWorkspace(repo.clone_url)
+    try:
+        workspace.clone(auth_token=token)
+        chunk_count = RepositoryIndexer(db).index_repository(repository_id, workspace.workspace_path)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Indexing failed: {e}")
+    finally:
+        workspace.cleanup()
+    return {"status": "indexed", "chunks": chunk_count}
 
 @router.get("/{repository_id}/search")
 def search_repo(repository_id: int, query: str, top_k: int = 10, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):

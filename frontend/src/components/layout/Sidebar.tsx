@@ -1,6 +1,6 @@
 import React from 'react';
 import { NavLink } from 'react-router-dom';
-import { LayoutDashboard, Activity, GitPullRequest, LogOut, Database } from 'lucide-react';
+import { LayoutDashboard, Activity, GitPullRequest, LogOut, Database, Award } from 'lucide-react';
 import { cn } from '../../utils/cn';
 import { useAuth } from '../../context/AuthContext';
 
@@ -18,6 +18,7 @@ export const Sidebar: React.FC = () => {
         { to: '/agent-runs', label: 'Agent Runs', icon: Activity },
         { to: '/repositories', label: 'Repositories', icon: Database },
         { to: '/pull-requests', label: 'Pull Requests', icon: GitPullRequest },
+        { to: '/evaluation', label: 'Evaluation', icon: Award },
     ];
 
     return (

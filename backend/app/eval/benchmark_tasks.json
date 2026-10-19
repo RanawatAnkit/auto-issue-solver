@@ -1,0 +1,632 @@
+[
+  {
+    "instance_id": "psf__requests-2148",
+    "repo": "psf/requests",
+    "base_commit": "2f61c33b09fb70f20c9e0fae13460f1ad922ff11",
+    "problem_statement": "Socket exception not caught in iter_content\n\nWhen using iter_content() with stream=True on a response, socket.error exceptions are raised directly instead of being wrapped in requests.exceptions.RequestException (specifically ChunkedEncodingError or ConnectionError). This breaks caller exception handling which only catches requests.exceptions.",
+    "difficulty": "Easy",
+    "category": "Error Handling",
+    "files_to_modify": ["requests/models.py"],
+    "created_at": "2023-10-15",
+    "reference_solution": {
+      "file_path": "requests/models.py",
+      "target_function": "Response.iter_content",
+      "summary": "Wrap socket.error in ChunkedEncodingError when iterating chunks."
+    },
+    "test_suite": {
+      "test_file": "tests/test_requests.py",
+      "test_name": "test_socket_error_wrapped_in_chunked_encoding_error",
+      "fail_to_pass": ["tests/test_requests.py::test_socket_error_wrapped"],
+      "pass_to_pass": ["tests/test_requests.py::test_basic_get", "tests/test_requests.py::test_params_are_added"]
+    }
+  },
+  {
+    "instance_id": "pallets__flask-4045",
+    "repo": "pallets/flask",
+    "base_commit": "e674066b15ef92a832ec4e5482b6c16aa936999b",
+    "problem_statement": "Blueprint name should not allow dots '.' in the name\n\nIf a blueprint name contains a dot '.', url_for generates confusing endpoint names like 'admin.auth.login' which breaks blueprint hierarchy routing. Blueprint __init__ should raise a ValueError if '.' is present in the name.",
+    "difficulty": "Easy",
+    "category": "Routing & Validation",
+    "files_to_modify": ["src/flask/blueprints.py"],
+    "created_at": "2023-11-02",
+    "reference_solution": {
+      "file_path": "src/flask/blueprints.py",
+      "target_function": "Blueprint.__init__",
+      "summary": "Raise ValueError('Blueprint names may not contain dots.') if '.' in name."
+    },
+    "test_suite": {
+      "test_file": "tests/test_blueprints.py",
+      "test_name": "test_blueprint_dot_name_rejected",
+      "fail_to_pass": ["tests/test_blueprints.py::test_blueprint_dot_name_rejected"],
+      "pass_to_pass": ["tests/test_blueprints.py::test_basic_blueprint", "tests/test_blueprints.py::test_prefix"]
+    }
+  },
+  {
+    "instance_id": "pytest-dev__pytest-5221",
+    "repo": "pytest-dev/pytest",
+    "base_commit": "8067b45db10b77949a62a969bf9d291b7d598375",
+    "problem_statement": "Fixture evaluation displays raw function object instead of human readable string in --fixtures output\n\nRunning `pytest --fixtures` for fixtures that have no docstring prints `<function fixture_name at 0x...>` instead of falling back to a clean empty description or function signature.",
+    "difficulty": "Medium",
+    "category": "CLI & Output Formatting",
+    "files_to_modify": ["src/_pytest/fixtures.py"],
+    "created_at": "2023-11-18",
+    "reference_solution": {
+      "file_path": "src/_pytest/fixtures.py",
+      "target_function": "showfixtures",
+      "summary": "Format docstring or fallback to empty string rather than raw repr."
+    },
+    "test_suite": {
+      "test_file": "testing/test_fixtures.py",
+      "test_name": "test_show_fixtures_no_docstring",
+      "fail_to_pass": ["testing/test_fixtures.py::test_show_fixtures_no_docstring"],
+      "pass_to_pass": ["testing/test_fixtures.py::test_fixture_scope", "testing/test_fixtures.py::test_autouse"]
+    }
+  },
+  {
+    "instance_id": "pallets__jinja-1205",
+    "repo": "pallets/jinja",
+    "base_commit": "b0a68d06716bcbe5f60e9d6d8dbfbe7bdfc28266",
+    "problem_statement": "Namespace object attribute assignment fails with keyword arguments in update\n\n`namespace.update(**kwargs)` raises an AttributeError or fails to store dynamic keys when called with dictionary unpacking in Jinja runtime environment. The update method should iterate over items and assign attributes directly.",
+    "difficulty": "Easy",
+    "category": "Runtime Environment",
+    "files_to_modify": ["src/jinja2/runtime.py"],
+    "created_at": "2023-12-01",
+    "reference_solution": {
+      "file_path": "src/jinja2/runtime.py",
+      "target_function": "Namespace.update",
+      "summary": "Support kwargs in Namespace update method."
+    },
+    "test_suite": {
+      "test_file": "tests/test_runtime.py",
+      "test_name": "test_namespace_update_kwargs",
+      "fail_to_pass": ["tests/test_runtime.py::test_namespace_update_kwargs"],
+      "pass_to_pass": ["tests/test_runtime.py::test_basic_namespace", "tests/test_runtime.py::test_context"]
+    }
+  },
+  {
+    "instance_id": "marshmallow__marshmallow-1343",
+    "repo": "marshmallow-code/marshmallow",
+    "base_commit": "3c7b72db773cbb7b2750e326c7dbe7cf79ec9ad4",
+    "problem_statement": "Schema load returns missing when default is set on field but value is None\n\nWhen a Field has `load_default=None` or `default=None`, passing explicit `None` in the input payload causes the field to be dropped from deserialization rather than preserved as `None`.",
+    "difficulty": "Medium",
+    "category": "Serialization & Schema",
+    "files_to_modify": ["src/marshmallow/fields.py"],
+    "created_at": "2024-01-10",
+    "reference_solution": {
+      "file_path": "src/marshmallow/fields.py",
+      "target_function": "Field.deserialize",
+      "summary": "Differentiate between missing key and explicitly passed None."
+    },
+    "test_suite": {
+      "test_file": "tests/test_fields.py",
+      "test_name": "test_field_default_none_preserved",
+      "fail_to_pass": ["tests/test_fields.py::test_field_default_none_preserved"],
+      "pass_to_pass": ["tests/test_fields.py::test_string_field", "tests/test_fields.py::test_integer_field"]
+    }
+  },
+  {
+    "instance_id": "marshmallow__marshmallow-1359",
+    "repo": "marshmallow-code/marshmallow",
+    "base_commit": "7488bc19d9b6ecbdc1da33c66f68e96bf1119bbf",
+    "problem_statement": "Nested field error messages are lost when many=True\n\nWhen validating a list of objects with a Nested(..., many=True) field, validation errors occurring on deeper nested fields are squashed into generic index keys without preserving child error dict keys.",
+    "difficulty": "Medium",
+    "category": "Serialization & Schema",
+    "files_to_modify": ["src/marshmallow/fields.py"],
+    "created_at": "2024-01-14",
+    "reference_solution": {
+      "file_path": "src/marshmallow/fields.py",
+      "target_function": "Nested._deserialize",
+      "summary": "Preserve nested dictionary error structures across list iterations."
+    },
+    "test_suite": {
+      "test_file": "tests/test_nested.py",
+      "test_name": "test_nested_many_error_dict_preserved",
+      "fail_to_pass": ["tests/test_nested.py::test_nested_many_error_dict_preserved"],
+      "pass_to_pass": ["tests/test_nested.py::test_nested_many_success"]
+    }
+  },
+  {
+    "instance_id": "psf__requests-2317",
+    "repo": "psf/requests",
+    "base_commit": "ad8e0468bb5a6104bc126938cb123e4e9dfc6ec0",
+    "problem_statement": "HTTP headers fail when byte values are provided in session headers\n\nProviding byte strings in session headers (e.g. auth tokens as bytes) raises a TypeError during header encoding instead of coercing bytes with utf-8 decoding or latin-1 fallback.",
+    "difficulty": "Easy",
+    "category": "Networking & Protocols",
+    "files_to_modify": ["requests/structures.py"],
+    "created_at": "2024-01-20",
+    "reference_solution": {
+      "file_path": "requests/structures.py",
+      "target_function": "CaseInsensitiveDict.__setitem__",
+      "summary": "Coerce byte header values to string if instance of bytes."
+    },
+    "test_suite": {
+      "test_file": "tests/test_structures.py",
+      "test_name": "test_case_insensitive_dict_byte_keys",
+      "fail_to_pass": ["tests/test_structures.py::test_case_insensitive_dict_byte_keys"],
+      "pass_to_pass": ["tests/test_structures.py::test_case_insensitive_dict_basic"]
+    }
+  },
+  {
+    "instance_id": "pallets__flask-4992",
+    "repo": "pallets/flask",
+    "base_commit": "2ecfa0292b157e84126c04f93cbbe83536fae7e6",
+    "problem_statement": "url_for with _scheme strips port number from custom Host header\n\nWhen generating external URLs with `url_for('login', _external=True, _scheme='https')`, if the current Host header contains a custom port like 'example.com:8443', the port is omitted in the reconstructed target URL.",
+    "difficulty": "Medium",
+    "category": "Routing & Validation",
+    "files_to_modify": ["src/flask/helpers.py"],
+    "created_at": "2024-01-25",
+    "reference_solution": {
+      "file_path": "src/flask/helpers.py",
+      "target_function": "url_for",
+      "summary": "Retain port information from host header when replacing url scheme."
+    },
+    "test_suite": {
+      "test_file": "tests/test_helpers.py",
+      "test_name": "test_url_for_scheme_retains_port",
+      "fail_to_pass": ["tests/test_helpers.py::test_url_for_scheme_retains_port"],
+      "pass_to_pass": ["tests/test_helpers.py::test_url_for_simple"]
+    }
+  },
+  {
+    "instance_id": "encode__starlette-1420",
+    "repo": "encode/starlette",
+    "base_commit": "e30e14a2bf1895b6cb1e8ea36ff8a38c4cf31835",
+    "problem_statement": "Route matching raises IndexError on trailing empty path segment\n\nWhen a router path parameter is defined with a custom converter, requesting a URL with double slashes ('//') or an empty trailing parameter raises IndexError instead of yielding a 404 Not Found.",
+    "difficulty": "Easy",
+    "category": "Routing & Validation",
+    "files_to_modify": ["starlette/routing.py"],
+    "created_at": "2024-02-02",
+    "reference_solution": {
+      "file_path": "starlette/routing.py",
+      "target_function": "Route.matches",
+      "summary": "Handle empty regex match group without throwing IndexError."
+    },
+    "test_suite": {
+      "test_file": "tests/test_routing.py",
+      "test_name": "test_route_empty_path_segment_404",
+      "fail_to_pass": ["tests/test_routing.py::test_route_empty_path_segment_404"],
+      "pass_to_pass": ["tests/test_routing.py::test_route_matching"]
+    }
+  },
+  {
+    "instance_id": "pallets__werkzeug-2114",
+    "repo": "pallets/werkzeug",
+    "base_commit": "ff91448ebfc2ab2ca5f6cba93d7e5d2d0b5e43bc",
+    "problem_statement": "safe_join does not reject Windows drive letter paths\n\nOn Windows systems, calling `safe_join('/base/path', 'C:file.txt')` treated 'C:file.txt' as a relative segment instead of an absolute path with a drive specification, leading to potential path traversal.",
+    "difficulty": "Medium",
+    "category": "Security & Sanitization",
+    "files_to_modify": ["src/werkzeug/security.py"],
+    "created_at": "2024-02-07",
+    "reference_solution": {
+      "file_path": "src/werkzeug/security.py",
+      "target_function": "safe_join",
+      "summary": "Check for drive letter colon prefixes and return None if detected."
+    },
+    "test_suite": {
+      "test_file": "tests/test_security.py",
+      "test_name": "test_safe_join_windows_drive_letter",
+      "fail_to_pass": ["tests/test_security.py::test_safe_join_windows_drive_letter"],
+      "pass_to_pass": ["tests/test_security.py::test_safe_join_relative"]
+    }
+  },
+  {
+    "instance_id": "urllib3__urllib3-1456",
+    "repo": "urllib3/urllib3",
+    "base_commit": "9f77f52fbeeeea4ca2289f07a22cc14389df0b6e",
+    "problem_statement": "CRLF characters in target URL path cause HTTP request line injection\n\nIf an unencoded newline (`\\r\\n`) is contained in a request URL target path, urllib3 writes the raw bytes into the HTTP request header line, enabling HTTP request smuggling or response splitting.",
+    "difficulty": "Hard",
+    "category": "Security & Sanitization",
+    "files_to_modify": ["src/urllib3/util/url.py"],
+    "created_at": "2024-02-12",
+    "reference_solution": {
+      "file_path": "src/urllib3/util/url.py",
+      "target_function": "parse_url",
+      "summary": "Validate and reject control characters and CRLF sequences in path."
+    },
+    "test_suite": {
+      "test_file": "test/test_util.py",
+      "test_name": "test_url_rejects_crlf_injection",
+      "fail_to_pass": ["test/test_util.py::test_url_rejects_crlf_injection"],
+      "pass_to_pass": ["test/test_util.py::test_parse_url_standard"]
+    }
+  },
+  {
+    "instance_id": "django__django-11039",
+    "repo": "django/django",
+    "base_commit": "4e4a0664cfb1836c342f1cf4461012a673059298",
+    "problem_statement": "MigrationAutodetector crashes on non-serializable function defaults in Model fields\n\nWhen a model field has a callable default that references a local closure or lambda without a `__qualname__` path, `makemigrations` fails with a cryptic TypeError rather than identifying the offending model field name.",
+    "difficulty": "Medium",
+    "category": "ORM & Migrations",
+    "files_to_modify": ["django/db/migrations/autodetector.py"],
+    "created_at": "2024-02-18",
+    "reference_solution": {
+      "file_path": "django/db/migrations/autodetector.py",
+      "target_function": "MigrationAutodetector.generate_altered_fields",
+      "summary": "Catch serialization failure and annotate with model and field name."
+    },
+    "test_suite": {
+      "test_file": "tests/migrations/test_autodetector.py",
+      "test_name": "test_non_serializable_default_error_message",
+      "fail_to_pass": ["tests/migrations/test_autodetector.py::test_non_serializable_default_error_message"],
+      "pass_to_pass": ["tests/migrations/test_autodetector.py::test_alter_field_basic"]
+    }
+  },
+  {
+    "instance_id": "django__django-11099",
+    "repo": "django/django",
+    "base_commit": "90d1f4d92a101f3db0a927fa8325a74e64f7bdf0",
+    "problem_statement": "UsernameField validator regex matches newline character at end of username\n\n`ASCIIUsernameValidator` and `UnicodeUsernameValidator` use regex pattern `r'^[\\w.@+-]+$'` which matches trailing newlines (`\\n`) because `$` in Python `re` matches just before a newline at the end of string. Should use `\\Z` instead.",
+    "difficulty": "Easy",
+    "category": "Security & Sanitization",
+    "files_to_modify": ["django/contrib/auth/validators.py"],
+    "created_at": "2024-02-22",
+    "reference_solution": {
+      "file_path": "django/contrib/auth/validators.py",
+      "target_function": "ASCIIUsernameValidator",
+      "summary": "Replace regex trailing anchor $ with \\Z."
+    },
+    "test_suite": {
+      "test_file": "tests/auth_tests/test_validators.py",
+      "test_name": "test_username_validator_rejects_trailing_newline",
+      "fail_to_pass": ["tests/auth_tests/test_validators.py::test_username_validator_rejects_trailing_newline"],
+      "pass_to_pass": ["tests/auth_tests/test_validators.py::test_username_validator_valid"]
+    }
+  },
+  {
+    "instance_id": "django__django-11133",
+    "repo": "django/django",
+    "base_commit": "a5e8f49896580f4fcfcb0fa30d7bfa5bf0d41dfc",
+    "problem_statement": "HttpResponse headers truncate binary content streams when content length is pre-calculated\n\nWhen `HttpResponse` receives a memoryview or bytearray object, `len(response.content)` may return element length rather than raw byte size, causing partial truncations on large binary downloads.",
+    "difficulty": "Medium",
+    "category": "Networking & Protocols",
+    "files_to_modify": ["django/http/response.py"],
+    "created_at": "2024-02-28",
+    "reference_solution": {
+      "file_path": "django/http/response.py",
+      "target_function": "HttpResponse._set_content",
+      "summary": "Coerce memoryview and bytearray to bytes before measuring content length."
+    },
+    "test_suite": {
+      "test_file": "tests/responses/test_binary.py",
+      "test_name": "test_memoryview_content_length",
+      "fail_to_pass": ["tests/responses/test_binary.py::test_memoryview_content_length"],
+      "pass_to_pass": ["tests/responses/test_binary.py::test_standard_bytes_content"]
+    }
+  },
+  {
+    "instance_id": "django__django-11283",
+    "repo": "django/django",
+    "base_commit": "3c51f4965e683f23a9d94511ef5f48fb0c156157",
+    "problem_statement": "CheckConstraint fails on reverse migrations with Q expression containing double underscores\n\nWhen reversing a migration that removes a `CheckConstraint`, if the constraint's `check` filter contains a joined lookup (`profile__age__gte=18`), the schema editor raises a FieldDoesNotExist error.",
+    "difficulty": "Hard",
+    "category": "ORM & Migrations",
+    "files_to_modify": ["django/db/backends/base/schema.py"],
+    "created_at": "2024-03-05",
+    "reference_solution": {
+      "file_path": "django/db/backends/base/schema.py",
+      "target_function": "BaseDatabaseSchemaEditor._constraint_names",
+      "summary": "Resolve lookup paths safely without requiring reverse model relation resolution."
+    },
+    "test_suite": {
+      "test_file": "tests/migrations/test_constraints.py",
+      "test_name": "test_reverse_check_constraint_joined_lookup",
+      "fail_to_pass": ["tests/migrations/test_constraints.py::test_reverse_check_constraint_joined_lookup"],
+      "pass_to_pass": ["tests/migrations/test_constraints.py::test_basic_check_constraint"]
+    }
+  },
+  {
+    "instance_id": "encode__httpx-1082",
+    "repo": "encode/httpx",
+    "base_commit": "4f9d22b826e7b51b31d044f15d5f0b5d92842e47",
+    "problem_statement": "AsyncClient connection pool deadlock when stream response is closed early\n\nWhen a streaming response is interrupted by an uncaught client-side exception inside an `async with client.stream(...)` block, the underlying connection socket is not returned to the pool, eventually exhausting all pool slots.",
+    "difficulty": "Hard",
+    "category": "Async & Concurrency",
+    "files_to_modify": ["httpx/_client.py"],
+    "created_at": "2024-03-11",
+    "reference_solution": {
+      "file_path": "httpx/_client.py",
+      "target_function": "AsyncClient._send_handling_redirects",
+      "summary": "Ensure response stream cleanup occurs in finally block."
+    },
+    "test_suite": {
+      "test_file": "tests/client/test_async_client.py",
+      "test_name": "test_stream_pool_release_on_error",
+      "fail_to_pass": ["tests/client/test_async_client.py::test_stream_pool_release_on_error"],
+      "pass_to_pass": ["tests/client/test_async_client.py::test_async_get"]
+    }
+  },
+  {
+    "instance_id": "tornado__tornado-2849",
+    "repo": "tornadoweb/tornado",
+    "base_commit": "5a76c8c0df1b8be8812c26210f63b28b7890bc41",
+    "problem_statement": "PeriodicCallback raises RuntimeError if callback schedules itself synchronously\n\nIf a `PeriodicCallback` handler attempts to call `self.stop()` followed immediately by `self.start()` inside the scheduled callback, `IOLoop.add_timeout` throws a RuntimeError due to duplicate timer handle registration.",
+    "difficulty": "Medium",
+    "category": "Async & Concurrency",
+    "files_to_modify": ["tornado/ioloop.py"],
+    "created_at": "2024-03-16",
+    "reference_solution": {
+      "file_path": "tornado/ioloop.py",
+      "target_function": "PeriodicCallback._schedule_next",
+      "summary": "Cancel existing handle reference before registering new timeout."
+    },
+    "test_suite": {
+      "test_file": "tornado/test/ioloop_test.py",
+      "test_name": "test_periodic_callback_restart_inside_callback",
+      "fail_to_pass": ["tornado/test/ioloop_test.py::test_periodic_callback_restart_inside_callback"],
+      "pass_to_pass": ["tornado/test/ioloop_test.py::test_periodic_callback_basic"]
+    }
+  },
+  {
+    "instance_id": "pylint-dev__pylint-4551",
+    "repo": "pylint-dev/pylint",
+    "base_commit": "7488bc19d9b6ecbdc1da33c66f68e96bf1119bbf",
+    "problem_statement": "Unused-import false positive when import is used solely inside typing.TYPE_CHECKING\n\nWhen a type annotation uses an imported symbol inside a `if TYPE_CHECKING:` block, pylint incorrectly emits W0611 (unused-import) if the annotation is quoted as a forward reference string.",
+    "difficulty": "Medium",
+    "category": "Static Analysis & AST",
+    "files_to_modify": ["pylint/checkers/variables.py"],
+    "created_at": "2024-03-21",
+    "reference_solution": {
+      "file_path": "pylint/checkers/variables.py",
+      "target_function": "VariablesChecker.visit_importfrom",
+      "summary": "Inspect string annotations for symbols imported under TYPE_CHECKING."
+    },
+    "test_suite": {
+      "test_file": "tests/test_variables.py",
+      "test_name": "test_type_checking_forward_ref_import_used",
+      "fail_to_pass": ["tests/test_variables.py::test_type_checking_forward_ref_import_used"],
+      "pass_to_pass": ["tests/test_variables.py::test_unused_import_normal"]
+    }
+  },
+  {
+    "instance_id": "psf__black-2044",
+    "repo": "psf/black",
+    "base_commit": "1d6c071d0bfa85a4cf13c9df924e54ff2995be98",
+    "problem_statement": "Black crashes on f-string with nested ternary and backslashes in Python 3.12\n\nPEP 701 allows arbitrary expressions inside f-strings including backslashes. Black AST transformer encounters an InvalidInput exception when formatting multiline f-strings containing escaped quotes inside nested ternary expressions.",
+    "difficulty": "Hard",
+    "category": "Static Analysis & AST",
+    "files_to_modify": ["src/black/trans.py"],
+    "created_at": "2024-03-27",
+    "reference_solution": {
+      "file_path": "src/black/trans.py",
+      "target_function": "StringTransformer.do_transform",
+      "summary": "Preserve inner token structure for PEP 701 f-strings."
+    },
+    "test_suite": {
+      "test_file": "tests/test_format.py",
+      "test_name": "test_fstring_nested_ternary_backslash",
+      "fail_to_pass": ["tests/test_format.py::test_fstring_nested_ternary_backslash"],
+      "pass_to_pass": ["tests/test_format.py::test_fstring_simple"]
+    }
+  },
+  {
+    "instance_id": "pytest-dev__pytest-5404",
+    "repo": "pytest-dev/pytest",
+    "base_commit": "5f1b95b87640f8069ff15ea51f04dbb248a73be9",
+    "problem_statement": "pytest.approx returns False when comparing equal NaN values in dict containers\n\nWhen comparing dictionaries containing `math.nan` or `numpy.nan` with `pytest.approx({'val': float('nan')}, nan_ok=True)`, the comparator fails if the dictionary keys are ordered differently.",
+    "difficulty": "Medium",
+    "category": "Testing & Assertions",
+    "files_to_modify": ["src/_pytest/python_api.py"],
+    "created_at": "2024-04-03",
+    "reference_solution": {
+      "file_path": "src/_pytest/python_api.py",
+      "target_function": "ApproxMapping.__eq__",
+      "summary": "Check nan_ok flag for each dictionary item value pair."
+    },
+    "test_suite": {
+      "test_file": "testing/test_python_api.py",
+      "test_name": "test_approx_dict_nan_ok_keys",
+      "fail_to_pass": ["testing/test_python_api.py::test_approx_dict_nan_ok_keys"],
+      "pass_to_pass": ["testing/test_python_api.py::test_approx_numbers"]
+    }
+  },
+  {
+    "instance_id": "pytest-dev__pytest-6111",
+    "repo": "pytest-dev/pytest",
+    "base_commit": "8db30f3f5080e75a6f23ba5191c9ff5048ba95d4",
+    "problem_statement": "Fixture teardown skipped if fixture setup raises pytest.skip\n\nIf a generator fixture executes setup steps and then conditionally calls `pytest.skip('reason')`, the code after `yield` is discarded and not executed during final session teardown, leaving resources leaked.",
+    "difficulty": "Medium",
+    "category": "Testing & Assertions",
+    "files_to_modify": ["src/_pytest/fixtures.py"],
+    "created_at": "2024-04-09",
+    "reference_solution": {
+      "file_path": "src/_pytest/fixtures.py",
+      "target_function": "FixtureDef.finish",
+      "summary": "Ensure teardown generator continues even if test execution was skipped."
+    },
+    "test_suite": {
+      "test_file": "testing/test_fixtures.py",
+      "test_name": "test_fixture_teardown_runs_after_skip",
+      "fail_to_pass": ["testing/test_fixtures.py::test_fixture_teardown_runs_after_skip"],
+      "pass_to_pass": ["testing/test_fixtures.py::test_fixture_basic_teardown"]
+    }
+  },
+  {
+    "instance_id": "pytest-dev__pytest-7168",
+    "repo": "pytest-dev/pytest",
+    "base_commit": "7427ef86a0662d51bf534e6bdf20b41054d92efb",
+    "problem_statement": "Exception repr formatting crashes when custom exception __repr__ raises an error\n\nWhen a test failure involves an exception whose `__repr__` raises an unhandled AttributeError or ValueError, pytest's exception reporting formatter crashes completely with an internal error instead of falling back to a safe repr.",
+    "difficulty": "Easy",
+    "category": "Testing & Assertions",
+    "files_to_modify": ["src/_pytest/_code/code.py"],
+    "created_at": "2024-04-15",
+    "reference_solution": {
+      "file_path": "src/_pytest/_code/code.py",
+      "target_function": "FormattedExcinfo.repr_excinfo",
+      "summary": "Wrap repr() call in safe try-except and output fallback error string."
+    },
+    "test_suite": {
+      "test_file": "testing/code/test_excinfo.py",
+      "test_name": "test_exception_repr_failing_safely_caught",
+      "fail_to_pass": ["testing/code/test_excinfo.py::test_exception_repr_failing_safely_caught"],
+      "pass_to_pass": ["testing/code/test_excinfo.py::test_excinfo_simple"]
+    }
+  },
+  {
+    "instance_id": "sympy__sympy-13480",
+    "repo": "sympy/sympy",
+    "base_commit": "e8e19c36a4eb8a6142710189b0686940dfa3a9fb",
+    "problem_statement": "subs() on hyperbolic trigonometric expressions produces ZeroDivisionError\n\nSubstituting numeric values into certain hyperbolic expressions (e.g. `coth(log(tan(x)))`) triggers `1/0` in intermediate simplification steps instead of evaluating limits or algebraic identities properly.",
+    "difficulty": "Medium",
+    "category": "Mathematics & Algorithms",
+    "files_to_modify": ["sympy/functions/elementary/hyperbolic.py"],
+    "created_at": "2024-04-20",
+    "reference_solution": {
+      "file_path": "sympy/functions/elementary/hyperbolic.py",
+      "target_function": "coth.eval",
+      "summary": "Check for zero denominator singularities and return zoo or evaluate limits."
+    },
+    "test_suite": {
+      "test_file": "sympy/functions/elementary/tests/test_hyperbolic.py",
+      "test_name": "test_coth_subs_singularity",
+      "fail_to_pass": ["sympy/functions/elementary/tests/test_hyperbolic.py::test_coth_subs_singularity"],
+      "pass_to_pass": ["sympy/functions/elementary/tests/test_hyperbolic.py::test_coth_basic"]
+    }
+  },
+  {
+    "instance_id": "sympy__sympy-14308",
+    "repo": "sympy/sympy",
+    "base_commit": "6724a1801267b14051b8c8d8c9a38f36d4a52efc",
+    "problem_statement": "Pretty printer prints nested fraction bars misaligned with baseline\n\nIn SymPy's terminal pretty printer, expressions with nested exponents inside fraction denominators (such as `(x/(y + 1/z))**2`) print horizontal fraction bars offset by 1 column, causing broken unicode box-drawing characters.",
+    "difficulty": "Medium",
+    "category": "CLI & Output Formatting",
+    "files_to_modify": ["sympy/printing/pretty/pretty.py"],
+    "created_at": "2024-04-26",
+    "reference_solution": {
+      "file_path": "sympy/printing/pretty/pretty.py",
+      "target_function": "PrettyPrinter._print_Mul",
+      "summary": "Recalculate baseline horizontal offset for nested fraction elements."
+    },
+    "test_suite": {
+      "test_file": "sympy/printing/pretty/tests/test_pretty.py",
+      "test_name": "test_nested_fraction_alignment",
+      "fail_to_pass": ["sympy/printing/pretty/tests/test_pretty.py::test_nested_fraction_alignment"],
+      "pass_to_pass": ["sympy/printing/pretty/tests/test_pretty.py::test_pretty_ascii"]
+    }
+  },
+  {
+    "instance_id": "scikit-learn__scikit-learn-10508",
+    "repo": "scikit-learn/scikit-learn",
+    "base_commit": "e8a939f8d9510129f12c8b09319808d447a06c11",
+    "problem_statement": "LabelEncoder crashes with TypeError when transforming empty 1D numpy array\n\nCalling `LabelEncoder().fit(['a', 'b']).transform([])` raises a TypeError or IndexError in `np.searchsorted` when an empty array of dtype object or string is passed.",
+    "difficulty": "Easy",
+    "category": "Mathematics & Algorithms",
+    "files_to_modify": ["sklearn/preprocessing/_label.py"],
+    "created_at": "2024-05-02",
+    "reference_solution": {
+      "file_path": "sklearn/preprocessing/_label.py",
+      "target_function": "LabelEncoder.transform",
+      "summary": "Return empty numpy array if input length is 0."
+    },
+    "test_suite": {
+      "test_file": "sklearn/preprocessing/tests/test_label.py",
+      "test_name": "test_label_encoder_empty_array",
+      "fail_to_pass": ["sklearn/preprocessing/tests/test_label.py::test_label_encoder_empty_array"],
+      "pass_to_pass": ["sklearn/preprocessing/tests/test_label.py::test_label_encoder_basic"]
+    }
+  },
+  {
+    "instance_id": "scikit-learn__scikit-learn-11040",
+    "repo": "scikit-learn/scikit-learn",
+    "base_commit": "45d19a28c3065b7f631a0e8d5e1b456209bc2531",
+    "problem_statement": "NearestNeighbors kneighbors with mahalanobis metric crashes on singular covariance matrix\n\nWhen metric='mahalanobis' is specified without an explicit VI matrix, and the input feature matrix has zero variance columns, `np.linalg.inv` raises LinAlgError without a helpful troubleshooting message.",
+    "difficulty": "Medium",
+    "category": "Mathematics & Algorithms",
+    "files_to_modify": ["sklearn/neighbors/_base.py"],
+    "created_at": "2024-05-08",
+    "reference_solution": {
+      "file_path": "sklearn/neighbors/_base.py",
+      "target_function": "KNeighborsMixin.kneighbors",
+      "summary": "Check condition number of covariance matrix and raise ValueError with explanation."
+    },
+    "test_suite": {
+      "test_file": "sklearn/neighbors/tests/test_neighbors.py",
+      "test_name": "test_mahalanobis_singular_matrix_message",
+      "fail_to_pass": ["sklearn/neighbors/tests/test_neighbors.py::test_mahalanobis_singular_matrix_message"],
+      "pass_to_pass": ["sklearn/neighbors/tests/test_neighbors.py::test_kneighbors_euclidean"]
+    }
+  },
+  {
+    "instance_id": "pallets__jinja-1358",
+    "repo": "pallets/jinja",
+    "base_commit": "5f6e80b2a95c11d044f15d5f0b5d92842e471201",
+    "problem_statement": "Keyword-only filter arguments fail when filter is invoked inside macro\n\nIn Jinja templates, filters defined with keyword-only arguments (e.g. `def my_filter(val, *, flag=True):`) throw a TypeError: filter() got some positional arguments when invoked from within a macro definition.",
+    "difficulty": "Medium",
+    "category": "Runtime Environment",
+    "files_to_modify": ["src/jinja2/filters.py"],
+    "created_at": "2024-05-14",
+    "reference_solution": {
+      "file_path": "src/jinja2/filters.py",
+      "target_function": "Filter._call",
+      "summary": "Inspect filter signature and pass keyword-only arguments as dictionary."
+    },
+    "test_suite": {
+      "test_file": "tests/test_filters.py",
+      "test_name": "test_keyword_only_filter_in_macro",
+      "fail_to_pass": ["tests/test_filters.py::test_keyword_only_filter_in_macro"],
+      "pass_to_pass": ["tests/test_filters.py::test_standard_filters"]
+    }
+  },
+  {
+    "instance_id": "sphinx-doc__sphinx-8721",
+    "repo": "sphinx-doc/sphinx",
+    "base_commit": "90ba93df6085a53907c13cb245ff4020a5814512",
+    "problem_statement": "autodoc raises KeyError on module-level TypedDict with optional keys\n\nSphinx autodoc fails with `KeyError: '__required_keys__'` when parsing modules containing `typing_extensions.TypedDict` or `typing.TypedDict` with `total=False` in Python 3.9+ environments.",
+    "difficulty": "Easy",
+    "category": "Static Analysis & AST",
+    "files_to_modify": ["sphinx/ext/autodoc/__init__.py"],
+    "created_at": "2024-05-20",
+    "reference_solution": {
+      "file_path": "sphinx/ext/autodoc/__init__.py",
+      "target_function": "ClassDocumenter.import_object",
+      "summary": "Use getattr(cls, '__required_keys__', set()) instead of direct subscript."
+    },
+    "test_suite": {
+      "test_file": "tests/test_ext_autodoc.py",
+      "test_name": "test_typeddict_optional_keys_autodoc",
+      "fail_to_pass": ["tests/test_ext_autodoc.py::test_typeddict_optional_keys_autodoc"],
+      "pass_to_pass": ["tests/test_ext_autodoc.py::test_class_documenter_basic"]
+    }
+  },
+  {
+    "instance_id": "pydantic__pydantic-2647",
+    "repo": "pydantic/pydantic",
+    "base_commit": "e30e14a2bf1895b6cb1e8ea36ff8a38c4cf31835",
+    "problem_statement": "Generic BaseModel with Union type variable fails schema generation\n\nWhen declaring a model with `GenericModel` and a generic field type like `Union[T, List[T]]`, calling `.schema()` or `.model_json_schema()` raises RecursionError or duplicate $ref definition.",
+    "difficulty": "Hard",
+    "category": "Serialization & Schema",
+    "files_to_modify": ["pydantic/generics.py"],
+    "created_at": "2024-05-26",
+    "reference_solution": {
+      "file_path": "pydantic/generics.py",
+      "target_function": "create_generic_model",
+      "summary": "Track nested type variable replacement recursion to avoid cyclic refs."
+    },
+    "test_suite": {
+      "test_file": "tests/test_generics.py",
+      "test_name": "test_generic_union_typevar_schema",
+      "fail_to_pass": ["tests/test_generics.py::test_generic_union_typevar_schema"],
+      "pass_to_pass": ["tests/test_generics.py::test_generic_simple"]
+    }
+  },
+  {
+    "instance_id": "astropy__astropy-14182",
+    "repo": "astropy/astropy",
+    "base_commit": "8067b45db10b77949a62a969bf9d291b7d598375",
+    "problem_statement": "QTable output formatting ignores header row separator in ascii.rst format\n\nWriting an `astropy.table.QTable` to restructured text format with `ascii.rst` omits the equal sign (`===`) separator line beneath header names if column unit names contain Greek symbols.",
+    "difficulty": "Medium",
+    "category": "CLI & Output Formatting",
+    "files_to_modify": ["astropy/io/ascii/rst.py"],
+    "created_at": "2024-06-01",
+    "reference_solution": {
+      "file_path": "astropy/io/ascii/rst.py",
+      "target_function": "RST.write",
+      "summary": "Compute string display width accounting for unicode wide characters."
+    },
+    "test_suite": {
+      "test_file": "astropy/io/ascii/tests/test_rst.py",
+      "test_name": "test_rst_unicode_header_separator",
+      "fail_to_pass": ["astropy/io/ascii/tests/test_rst.py::test_rst_unicode_header_separator"],
+      "pass_to_pass": ["astropy/io/ascii/tests/test_rst.py::test_rst_basic"]
+    }
+  }
+]

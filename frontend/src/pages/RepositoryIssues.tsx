@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
-import { getIssues } from '../services/api';
+import { getIssues, errorMessage, errorStatus } from '../services/api';
 import { GitHubIssue } from '../types/domain';
 import { ArrowLeft, AlertCircle, Clock, CircleDot, Database } from 'lucide-react';
 
@@ -19,15 +19,15 @@ const RepositoryIssues: React.FC = () => {
             try {
                 const data = await getIssues(Number(repositoryId));
                 setIssues(data);
-            } catch (err: any) {
-                if (err.response?.status === 401) {
+            } catch (err) {
+                if (errorStatus(err) === 401) {
                     navigate('/login');
-                } else if (err.response?.status === 403) {
+                } else if (errorStatus(err) === 403) {
                     setError("You do not have permission to access this repository.");
-                } else if (err.response?.status === 404) {
+                } else if (errorStatus(err) === 404) {
                     setError("Repository not found.");
                 } else {
-                    setError(err.message || 'Failed to fetch issues');
+                    setError(errorMessage(err, 'Failed to fetch issues'));
                 }
             } finally {
                 setLoading(false);

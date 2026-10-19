@@ -94,7 +94,7 @@ async def github_callback(code: str, state: str, response: Response, db: DBSessi
     db.commit()
     
     # We must return a redirect to frontend since this is the callback URL!
-    redir = RedirectResponse(url="http://localhost:5173/", status_code=302)
+    redir = RedirectResponse(url=settings.FRONTEND_URL.rstrip("/") + "/", status_code=302)
     
     # Secure HTTPOnly Cookie (SameSite=Lax for OAuth)
     # Using secure=False primarily for local testing; would be True for https production!

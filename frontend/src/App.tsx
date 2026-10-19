@@ -11,6 +11,7 @@ import { Login } from './pages/Login';
 import Repositories from './pages/Repositories';
 import RepositoryIssues from './pages/RepositoryIssues';
 import IssueDetails from './pages/IssueDetails';
+import { Evaluation } from './pages/Evaluation';
 
 const App: React.FC = () => {
     return (
@@ -26,6 +27,7 @@ const App: React.FC = () => {
                         <Route path="/repositories/:repositoryId/issues" element={<RepositoryIssues />} />
                         <Route path="/repositories/:repositoryId/issues/:issueNumber" element={<IssueDetails />} />
                         <Route path="/pull-requests" element={<PullRequests />} />
+                        <Route path="/evaluation" element={<Evaluation />} />
                     </Route>
                 </Routes>
             </BrowserRouter>

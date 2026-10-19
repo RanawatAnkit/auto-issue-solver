@@ -8,6 +8,7 @@ from app.services.code_retriever import CodeRetriever
 from app.db.session import SessionLocal
 from app.models.domain import Repository
 
+@pytest.mark.postgres
 @patch("app.services.repository_indexer.EmbeddingService")
 @patch("app.services.code_retriever.EmbeddingService")
 def test_indexer_and_retrieval(mock_retriever_emb, mock_indexer_emb):

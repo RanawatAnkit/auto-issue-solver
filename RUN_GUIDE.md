@@ -64,6 +64,13 @@ GEMINI_API_KEY=your_gemini_api_key_here
 # OPENAI_API_KEY=
 ```
 
+### Pipeline Execution Flags (Required for End-to-End Solving):
+Make sure both flags are set to `true` in your `.env` so the agent actively writes code and opens PRs:
+```env
+ENABLE_CODE_MUTATION=true   # If false, agent stops after planning (PLAN_READY)
+ENABLE_PR_CREATION=true     # Opens a GitHub Pull Request after tests pass
+```
+
 > **Note:** Whenever you change `.env`, always restart your **Backend API** and **Issue Worker** terminals so the new variables take effect.
 
 ---
@@ -84,7 +91,7 @@ ollama list
 
 ---
 
-### Step 2: Start Infrastructure (PostgreSQL & Redis)
+### Step 2: Start Infrastructure (PostgreSQL, Redis & Sandbox)
 Make sure **Docker Desktop** is running, then open Terminal 1 in the project root:
 ```powershell
 cd c:\sem7\proj\auto-issue-solver
@@ -95,6 +102,19 @@ Verify the containers are healthy:
 docker ps
 ```
 *(You should see `auto-issue-solver-postgres-1` and `auto-issue-solver-redis-1`).*
+
+**Run database migrations to ensure the latest schema:**
+```powershell
+cd c:\sem7\proj\auto-issue-solver\backend
+.\venv\Scripts\activate
+alembic upgrade head
+```
+
+**Build the sandbox test runner image (one-time setup):**
+```powershell
+cd c:\sem7\proj\auto-issue-solver
+docker build -t test-sandbox:latest sandbox/
+```
 
 ---
 
