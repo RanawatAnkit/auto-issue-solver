@@ -1,5 +1,17 @@
 import axios from 'axios';
-import { AgentAction, AgentRunDetailResponse, AgentRunResponse, GitHubIssue, PullRequestResponse, Repository, UserProfile } from '../types/domain';
+import { 
+    AgentAction, 
+    AgentRunDetailResponse, 
+    AgentRunResponse, 
+    GitHubIssue, 
+    PullRequestResponse, 
+    Repository, 
+    UserProfile,
+    BenchmarkTask,
+    EvaluationStats,
+    EvaluationRunResult,
+    EvaluationBatchResponse
+} from '../types/domain';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
 
@@ -90,3 +102,28 @@ export const getRepositoryIssue = async (repoId: number | string, issueNumber: n
     const response = await apiClient.get<GitHubIssue>(`/repositories/${repoId}/issues/${issueNumber}`);
     return response.data;
 };
+
+// --- SWE-BENCH EVALUATION ---
+export const getEvaluationStats = async (): Promise<EvaluationStats> => {
+    const response = await apiClient.get<EvaluationStats>('/evaluation/stats');
+    return response.data;
+};
+
+export const getBenchmarkTasks = async (): Promise<BenchmarkTask[]> => {
+    const response = await apiClient.get<BenchmarkTask[]>('/evaluation/tasks');
+    return response.data;
+};
+
+export const getEvaluationHistory = async (): Promise<EvaluationRunResult[]> => {
+    const response = await apiClient.get<EvaluationRunResult[]>('/evaluation/history');
+    return response.data;
+};
+
+export const triggerEvaluationRun = async (taskIds?: string[], provider?: string): Promise<EvaluationBatchResponse> => {
+    const response = await apiClient.post<EvaluationBatchResponse>('/evaluation/run', {
+        task_ids: taskIds && taskIds.length > 0 ? taskIds : undefined,
+        provider: provider || undefined
+    });
+    return response.data;
+};
+

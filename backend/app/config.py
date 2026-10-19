@@ -59,7 +59,7 @@ class Settings(BaseSettings):
     CHUNK_OVERLAP: int = 50
     OPENAI_API_KEY: str | None = None
     GEMINI_API_KEY: str | None = None
-    GEMINI_MODEL: str = "gemini-1.5-pro"
+    GEMINI_MODEL: str = "gemini-3.8-flash"
     LLM_FALLBACK_PROVIDER: str | None = None
     # Falling back from a local model to a cloud provider can incur charges, so it
     # must be opted into explicitly.

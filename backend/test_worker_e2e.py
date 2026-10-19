@@ -27,9 +27,10 @@ if run:
     # 1. Dynamically reconstruct Github App JWT natively 
     with open(settings.GITHUB_APP_PRIVATE_KEY, "rb") as key_file:
         private_key = key_file.read()
+    now = int(time.time())
     payload = {
-        "iat": int(time.time()) - 60,
-        "exp": int(time.time()) + (10 * 60),
+        "iat": now - 60,
+        "exp": now + (8 * 60),
         "iss": settings.GITHUB_APP_ID
     }
     encoded_jwt = jwt.encode(payload, private_key, algorithm="RS256")

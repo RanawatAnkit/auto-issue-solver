@@ -73,8 +73,8 @@ def single_file_change_plan(target: str, operation: str) -> type[BaseModel]:
     step_change = create_model(
         "CodeChange",
         __base__=CodeChange,
-        file_path=(Literal[target], Field(description=f"Must be exactly '{target}'.")),
-        operation=(Literal[operation], Field(description=f"Must be '{operation}'.")),
+        file_path=(Literal[target], Field(description=f"Must be exactly '{target}'.", json_schema_extra={"enum": [target]})),
+        operation=(Literal[operation], Field(description=f"Must be '{operation}'.", json_schema_extra={"enum": [operation]})),
     )
     return create_model("CodeChangePlan", changes=(List[step_change], Field(
         description=f"Changes to {target} only. Empty list if the file needs no change.")))

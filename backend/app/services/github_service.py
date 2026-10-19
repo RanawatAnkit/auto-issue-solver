@@ -42,9 +42,10 @@ class GitHubService:
         import jwt, time, requests
         private_key = _load_private_key()
 
+        now = int(time.time())
         encoded_jwt = jwt.encode({
-            'iat': int(time.time()) - 60,
-            'exp': int(time.time()) + (10 * 60),
+            'iat': now - 60,
+            'exp': now + (8 * 60),
             'iss': settings.GITHUB_APP_ID
         }, private_key, algorithm='RS256')
         

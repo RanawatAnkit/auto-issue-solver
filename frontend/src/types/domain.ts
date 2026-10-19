@@ -99,3 +99,80 @@ export interface UserProfile {
     github_name: string | null;
     github_avatar_url: string | null;
 }
+
+export interface BenchmarkReferenceSolution {
+    file_path?: string;
+    target_function?: string;
+    summary?: string;
+}
+
+export interface BenchmarkTestSuite {
+    test_file?: string;
+    test_name?: string;
+    fail_to_pass?: string[];
+    pass_to_pass?: string[];
+}
+
+export interface IssueAnalysisData {
+    problem_summary?: string;
+    expected_behavior?: string;
+    current_behavior?: string;
+    affected_areas?: string[];
+    constraints?: string[];
+    acceptance_criteria?: string[];
+    [key: string]: unknown;
+}
+
+export interface BenchmarkTask {
+    instance_id: string;
+    repo: string;
+    base_commit: string;
+    problem_statement: string;
+    hints_text?: string;
+    test_patch?: string;
+    pass_to_pass?: string[];
+    fail_to_pass?: string[];
+    files_to_modify: string[];
+    difficulty?: string;
+    category?: string;
+    reference_solution?: BenchmarkReferenceSolution;
+    test_suite?: BenchmarkTestSuite;
+    latest_status?: 'RESOLVED' | 'FAILED' | 'PENDING' | string;
+    latest_runtime?: number | null;
+    latest_provider?: string | null;
+    latest_patch?: string | null;
+    latest_analysis?: IssueAnalysisData | null;
+}
+
+export interface EvaluationStats {
+    total_benchmark_tasks: number;
+    total_evaluated: number;
+    resolved_count: number;
+    failed_count: number;
+    pass_rate_percentage: number;
+    average_resolution_time_seconds: number;
+    active_provider: string;
+    active_model: string;
+    benchmark_dataset: string;
+}
+
+export interface EvaluationRunResult {
+    run_id: string;
+    instance_id: string;
+    repo: string;
+    provider: string;
+    model: string;
+    status: 'RESOLVED' | 'FAILED' | string;
+    runtime_seconds: number;
+    completed_at: string;
+    patch_diff: string;
+    tests_summary?: string;
+    error?: string;
+}
+
+export interface EvaluationBatchResponse {
+    status: string;
+    total_evaluated: number;
+    resolved_count: number;
+    results: EvaluationRunResult[];
+}

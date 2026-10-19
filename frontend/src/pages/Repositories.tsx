@@ -118,7 +118,7 @@ export const Repositories: React.FC = () => {
                         </div>
                         <button
                             onClick={() => {
-                                window.open("https://github.com/apps/auto-issue-solver-college", "_blank", "noopener,noreferrer");
+                                window.open("https://github.com/apps/auto-issue-solver-college/installations/new", "_blank", "noopener,noreferrer");
                             }}
                             className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg font-medium transition-colors border border-slate-700 flex items-center gap-2 whitespace-nowrap focus:outline-none"
                         >
@@ -237,7 +237,7 @@ export const Repositories: React.FC = () => {
                                     </button>
                                     <button
                                         onClick={() => {
-                                            window.open("https://github.com/apps/auto-issue-solver-college", "_blank", "noopener,noreferrer");
+                                            window.open("https://github.com/apps/auto-issue-solver-college/installations/new", "_blank", "noopener,noreferrer");
                                             setModalStep(2);
                                         }}
                                         className="px-5 py-2.5 bg-indigo-500 hover:bg-indigo-600 text-white rounded-lg font-medium transition-colors flex items-center gap-2 focus:outline-none shadow-lg shadow-indigo-500/20"

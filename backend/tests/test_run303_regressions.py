@@ -122,7 +122,8 @@ def test_invalid_signature_is_rejected_with_error_and_lines(repo):
     with pytest.raises(PatchSyntaxError) as exc:
         PatchService(repo).apply_plan(_symbol_edit("app/services.py", "TaskService.list_tasks", BAD_SIGNATURE))
     msg = str(exc.value)
-    assert "non-default argument follows default argument" in msg
+    assert ("non-default argument follows default argument" in msg or
+            "parameter without a default follows parameter with a default" in msg)
     assert "def list_tasks(due_date" in msg  # the offending source line is quoted back
     assert "original file was left unchanged" in msg
     assert _digest(repo) == before
@@ -218,7 +219,8 @@ def test_retry_receives_category_error_and_rejected_answer(repo):
     assert metrics["changed_files"] == ["app/services.py"]
     feedback = gen.call_args_list[1].args[3]
     assert "[SYNTAX_ERROR]" in feedback
-    assert "non-default argument follows default argument" in feedback
+    assert ("non-default argument follows default argument" in feedback or
+            "parameter without a default follows parameter with a default" in feedback)
     assert "due_date: datetime | None = None, self" in feedback  # its own rejected answer
     assert "Nothing from that answer was applied" in feedback
     # Each step is generated against a schema restricted to the target file.

@@ -4,7 +4,7 @@ import { cn } from '../../utils/cn';
 export const StatusBadge: React.FC<{ status: string }> = ({ status }) => {
     let colorClass = 'bg-slate-700 text-slate-300';
 
-    if (status.includes('SUCCESS') || status === 'COMPLETED' || status === 'PR_CREATED' || status === 'CODE_CHANGED' || status === 'PATCH_APPLIED' || status === 'COMMITTED' || status === 'PUSHED') {
+    if (status.includes('SUCCESS') || status === 'COMPLETED' || status === 'PR_CREATED' || status === 'RESOLVED' || status === 'CODE_CHANGED' || status === 'PATCH_APPLIED' || status === 'COMMITTED' || status === 'PUSHED') {
         colorClass = 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30';
     } else if (status.includes('FAIL') || status.includes('EXHAUSTED') || status === 'CANCELLED') {
         colorClass = 'bg-rose-500/20 text-rose-400 border border-rose-500/30';
