@@ -39,3 +39,14 @@ frontend/*_out.txt
 *.tsbuildinfo
 # Private keys
 *.pem
+C:\sem7\proj\auto-issue-solver\backend\auto-issue-solver-college.2026-08-09.private-key.pem
+
+# Local tools
+ngrok.exe
+ngrok
+
+# SWE-bench harness output and repository cache (see RUNGUIDE.md)
+backend/eval_results/
+backend/.eval_cache/
+
+RUNGUIDE.md

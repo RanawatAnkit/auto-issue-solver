@@ -1,53 +1,72 @@
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
+from typing import Any, Dict, List, Literal, Optional
+
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from typing import List, Optional, Dict, Any
-from app.eval.swe_evaluator import SWEEvaluator
+
 from app.api.auth import get_current_user
+from app.config import settings
+from app.eval import jobs
+from app.eval.harness import AGENT, GOLD, load_tasks
+from app.eval.store import ResultsStore, summarize
 from app.models.domain import User
 
 router = APIRouter()
-evaluator = SWEEvaluator()
+
 
 class RunEvaluationRequest(BaseModel):
     task_ids: Optional[List[str]] = None
-    provider: Optional[str] = None
+    # "gold" grades the reference patches: it checks the environments, not the agent.
+    mode: Literal["agent", "gold"] = AGENT
+    allow_network: bool = False
+
+
+def _store() -> ResultsStore:
+    return ResultsStore(settings.EVAL_RESULTS_DIR)
+
 
 @router.get("/stats")
 def get_evaluation_stats(current_user: User = Depends(get_current_user)) -> Dict[str, Any]:
-    """Returns overall SWE-bench metrics, resolution rate, and benchmark metadata."""
-    return evaluator.get_stats()
+    """Headline numbers over the latest agent result for each benchmark task."""
+    return summarize(load_tasks(), _store())
+
 
 @router.get("/tasks")
 def get_benchmark_tasks(current_user: User = Depends(get_current_user)) -> List[Dict[str, Any]]:
-    """Lists all curated SWE-bench benchmark tasks with their latest evaluation status."""
-    return evaluator.get_tasks_with_status()
+    """Benchmark tasks with their latest agent result and environment (gold) check."""
+    store = _store()
+    agent, gold = store.latest(AGENT), store.latest(GOLD)
+    return [{**t, "latest_result": agent.get(t["instance_id"]), "environment_check": gold.get(t["instance_id"])}
+            for t in load_tasks()]
+
 
 @router.get("/history")
-def get_evaluation_history(current_user: User = Depends(get_current_user)) -> List[Dict[str, Any]]:
-    """Returns the historical log of all benchmark evaluation runs."""
-    return evaluator._load_history()
+def get_evaluation_history(limit: int = 200, current_user: User = Depends(get_current_user)) -> List[Dict[str, Any]]:
+    """Most recent results first."""
+    return list(reversed(_store().history()))[:max(limit, 0)]
 
-@router.post("/run")
+
+@router.get("/status")
+def get_evaluation_status(current_user: User = Depends(get_current_user)) -> Dict[str, Any]:
+    return jobs.runner.status()
+
+
+@router.post("/run", status_code=202)
 def trigger_evaluation(req: RunEvaluationRequest, current_user: User = Depends(get_current_user)) -> Dict[str, Any]:
-    """Runs SWE-bench evaluation on specified tasks or all benchmark tasks."""
-    tasks = evaluator.get_tasks_with_status()
+    """Start a background run over the given tasks (default: all). Poll /evaluation/status."""
+    tasks = load_tasks()
     if req.task_ids:
-        selected_tasks = [t for t in tasks if t["instance_id"] in req.task_ids]
-    else:
-        selected_tasks = tasks
+        unknown = sorted(set(req.task_ids) - {t["instance_id"] for t in tasks})
+        if unknown:
+            raise HTTPException(status_code=400, detail=f"Unknown benchmark task(s): {', '.join(unknown)}")
+        tasks = [t for t in tasks if t["instance_id"] in req.task_ids]
+    try:
+        return jobs.runner.start(tasks, mode=GOLD if req.mode == GOLD else AGENT, allow_network=req.allow_network)
+    except jobs.JobAlreadyRunning as e:
+        raise HTTPException(status_code=409, detail=str(e))
 
-    if not selected_tasks:
-        raise HTTPException(status_code=400, detail="No matching benchmark tasks found.")
 
-    results = []
-    for t in selected_tasks:
-        res = evaluator.evaluate_task(t, provider=req.provider)
-        results.append(res)
-
-    resolved_count = sum(1 for r in results if r.get("status") == "RESOLVED")
-    return {
-        "status": "completed",
-        "total_evaluated": len(results),
-        "resolved_count": resolved_count,
-        "results": results
-    }
+@router.post("/stop")
+def stop_evaluation(current_user: User = Depends(get_current_user)) -> Dict[str, Any]:
+    """Stop after the task currently being evaluated."""
+    jobs.runner.request_stop()
+    return jobs.runner.status()

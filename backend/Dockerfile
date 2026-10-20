@@ -2,7 +2,7 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Install system dependencies (needed for git, pgvector compilation, tree-sitter)
+# git is used by the worker (clone/commit/push); gcc and the Postgres headers build wheels that lack binaries
 RUN apt-get update && apt-get install -y \
     git \
     gcc \

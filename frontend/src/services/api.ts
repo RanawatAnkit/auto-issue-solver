@@ -9,8 +9,8 @@ import {
     UserProfile,
     BenchmarkTask,
     EvaluationStats,
-    EvaluationRunResult,
-    EvaluationBatchResponse
+    EvaluationResult,
+    EvaluationJobStatus
 } from '../types/domain';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
@@ -114,16 +114,32 @@ export const getBenchmarkTasks = async (): Promise<BenchmarkTask[]> => {
     return response.data;
 };
 
-export const getEvaluationHistory = async (): Promise<EvaluationRunResult[]> => {
-    const response = await apiClient.get<EvaluationRunResult[]>('/evaluation/history');
+export const getEvaluationHistory = async (): Promise<EvaluationResult[]> => {
+    const response = await apiClient.get<EvaluationResult[]>('/evaluation/history');
     return response.data;
 };
 
-export const triggerEvaluationRun = async (taskIds?: string[], provider?: string): Promise<EvaluationBatchResponse> => {
-    const response = await apiClient.post<EvaluationBatchResponse>('/evaluation/run', {
+export const getEvaluationStatus = async (): Promise<EvaluationJobStatus> => {
+    const response = await apiClient.get<EvaluationJobStatus>('/evaluation/status');
+    return response.data;
+};
+
+// Starts a background run and returns immediately; poll getEvaluationStatus.
+export const triggerEvaluationRun = async (
+    taskIds: string[] | undefined,
+    mode: 'agent' | 'gold' = 'agent',
+    allowNetwork = false
+): Promise<EvaluationJobStatus> => {
+    const response = await apiClient.post<EvaluationJobStatus>('/evaluation/run', {
         task_ids: taskIds && taskIds.length > 0 ? taskIds : undefined,
-        provider: provider || undefined
+        mode,
+        allow_network: allowNetwork
     });
+    return response.data;
+};
+
+export const stopEvaluationRun = async (): Promise<EvaluationJobStatus> => {
+    const response = await apiClient.post<EvaluationJobStatus>('/evaluation/stop');
     return response.data;
 };
 

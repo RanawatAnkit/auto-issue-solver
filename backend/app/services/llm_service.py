@@ -474,6 +474,8 @@ class LLMService:
         if isinstance(prompt_tokens, int) and prompt_tokens >= num_ctx - 8:
             logger.warning("Ollama prompt filled the whole context window (%d tokens); input may have been truncated.", prompt_tokens)
         if data.get("done_reason") == "length":
+            # The tail shows whether the model looped (repeated text/whitespace) or was writing a huge edit.
+            logger.warning("Ollama output hit the token limit; last characters: %r", raw[-400:])
             raise LLMOutputError(
                 f"Ollama response was cut off at OLLAMA_NUM_PREDICT={num_predict} tokens before the JSON was complete.",
                 raw,

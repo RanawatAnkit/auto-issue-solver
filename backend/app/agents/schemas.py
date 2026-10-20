@@ -75,9 +75,17 @@ def single_file_change_plan(target: str, operation: str) -> type[BaseModel]:
         __base__=CodeChange,
         file_path=(Literal[target], Field(description=f"Must be exactly '{target}'.", json_schema_extra={"enum": [target]})),
         operation=(Literal[operation], Field(description=f"Must be '{operation}'.", json_schema_extra={"enum": [operation]})),
+        # Bounded lists become bounded grammars under constrained decoding. Without
+        # a bound, small models were seen repeating the same edit until the output
+        # token limit, which never yields valid JSON.
+        edits=(List[TextEdit], Field(default_factory=list, max_length=MAX_STEP_EDITS,
+                                     description=f"For 'modify': at most {MAX_STEP_EDITS} search/replace edits, applied in order.")),
     )
     return create_model("CodeChangePlan", changes=(List[step_change], Field(
-        description=f"Changes to {target} only. Empty list if the file needs no change.")))
+        max_length=1, description=f"At most one change, to {target} only. Empty list if the file needs no change.")))
+
+
+MAX_STEP_EDITS = 8
 
 FAILURE_TYPES = (
     "ASSERTION_ERROR", "IMPORT_ERROR", "SYNTAX_ERROR", "TYPE_ERROR", "RUNTIME_ERROR", "TIMEOUT",
