@@ -69,6 +69,24 @@ def classify_pytest_result(exit_code: int, output: str, tracked_files=()) -> str
     return TESTS_FAILED
 
 
+def sandbox_container_kwargs(image: str, command: list, network: bool = False) -> dict:
+    """docker-py `containers.run` arguments shared by every sandboxed command."""
+    return dict(
+        image=image,
+        command=command,
+        network_mode="bridge" if network else "none",
+        privileged=False,
+        detach=True,
+        auto_remove=False,
+        labels=SANDBOX_LABEL,
+        mem_limit=getattr(settings, "SANDBOX_MEMORY_LIMIT", "1g"),
+        nano_cpus=int(getattr(settings, "SANDBOX_CPU_LIMIT", 1) * 1e9),
+        pids_limit=512,
+        cap_drop=["ALL"],
+        security_opt=["no-new-privileges"],
+    )
+
+
 def _summary_counts(output: str) -> dict:
     counts = {}
     for key in ("passed", "failed", "error", "errors", "skipped", "xfailed"):
@@ -208,21 +226,8 @@ class TestRunner:
     # ---- container helpers -----------------------------------------------------
 
     def _run_container(self, image: str, command: list, timeout: int, mount_workspace: bool = False) -> dict:
-        kwargs = dict(
-            image=image,
-            command=command,
-            network_mode="none",
-            privileged=False,
-            detach=True,
-            auto_remove=False,
-            labels=SANDBOX_LABEL,
-            mem_limit=getattr(settings, "SANDBOX_MEMORY_LIMIT", "1g"),
-            nano_cpus=int(getattr(settings, "SANDBOX_CPU_LIMIT", 1) * 1e9),
-            pids_limit=512,
-            cap_drop=["ALL"],
-            security_opt=["no-new-privileges"],
-            environment={"PYTHONPATH": "/workspace", "PYTHONDONTWRITEBYTECODE": "1", "CI": "true"},
-        )
+        kwargs = sandbox_container_kwargs(image, command)
+        kwargs["environment"] = {"PYTHONPATH": "/workspace", "PYTHONDONTWRITEBYTECODE": "1", "CI": "true"}
         if mount_workspace:
             kwargs.update(volumes={self.workspace_path: {"bind": "/workspace", "mode": "rw"}}, working_dir="/workspace")
 

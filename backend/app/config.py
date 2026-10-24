@@ -2,6 +2,9 @@ import os
 from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+_BACKEND_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
 class Settings(BaseSettings):
     DB_USER: str = "postgres"
     DB_PASSWORD: str = "postgres"
@@ -22,7 +25,6 @@ class Settings(BaseSettings):
     GITHUB_OAUTH_CLIENT_SECRET: str | None = None
     GITHUB_OAUTH_REDIRECT_URI: str = "http://localhost:8000/auth/github/callback"
     FRONTEND_URL: str = "http://localhost:5173"
-    SESSION_SECRET_KEY: str = "super_secret_session_key_replace_in_prod"
     SESSION_EXPIRE_HOURS: int = 24
 
     MAX_REPAIR_ATTEMPTS: int = 3
@@ -43,6 +45,9 @@ class Settings(BaseSettings):
     GIT_AUTHOR_NAME: str = "auto-issue-solver[bot]"
     GIT_AUTHOR_EMAIL: str = "auto-issue-solver@users.noreply.github.com"
     MAX_CHANGED_FILES: int = 20
+    # Plan size limits; larger plans are sent back to the planner to be narrowed.
+    PLAN_MAX_FILES: int = 4
+    PLAN_MAX_SYMBOLS_PER_FILE: int = 4
     MAX_DIFF_BYTES: int = 500000
     ALLOW_FILE_DELETE: bool = False
 
@@ -51,7 +56,12 @@ class Settings(BaseSettings):
     EMBEDDING_BATCH_SIZE: int = 100
     LLM_PROVIDER: str = "ollama"
     OPENAI_MODEL: str = 'gpt-4o'
+    # Point the "openai" provider at any OpenAI-compatible API, e.g. https://api.groq.com/openai/v1
+    OPENAI_BASE_URL: str | None = None
     MAX_LLM_RETRIES: int = 2
+    # A 429 whose retry delay is at most this many seconds (per-minute limits) is
+    # waited out; longer delays (daily quotas) fail immediately.
+    LLM_RATE_LIMIT_MAX_WAIT_SECONDS: int = 90
     MAX_CONTEXT_CHUNKS: int = 10
     MAX_CONTEXT_TOKENS: int = 12000
     MAX_FILE_SIZE_MB: int = 1
@@ -74,12 +84,31 @@ class Settings(BaseSettings):
     # truncates long prompts from the front, dropping the system instructions.
     OLLAMA_NUM_CTX: int = 16384
     OLLAMA_NUM_PREDICT: int = 4096
+    # Reasoning effort for thinking models: "low"/"medium"/"high" (gpt-oss) or "true"/"false".
+    # Empty: not sent (models without a reasoning mode reject the parameter).
+    OLLAMA_THINK: str = ""
+
+    # SWE-bench harness (python -m app.eval). Relative paths are resolved against backend/.
+    EVAL_CACHE_DIR: str = os.path.join(_BACKEND_DIR, ".eval_cache")
+    EVAL_RESULTS_DIR: str = os.path.join(_BACKEND_DIR, "eval_results")
+    EVAL_TEST_TIMEOUT_SECONDS: int = 1800
+    EVAL_MEMORY_LIMIT: str = "2g"
+    # Repair attempts when the agent's own tests fail on its patch (0 disables repair).
+    EVAL_REPAIR_ATTEMPTS: int = 2
 
     model_config = SettingsConfigDict(
-        env_file=os.path.join(os.path.dirname(os.path.dirname(__file__)), "../.env"),
+        env_file=os.path.join(_BACKEND_DIR, "..", ".env"),
         env_file_encoding="utf-8",
         extra="ignore"
     )
+
+    @model_validator(mode="after")
+    def _resolve_eval_dirs(self):
+        for name in ("EVAL_CACHE_DIR", "EVAL_RESULTS_DIR"):
+            path = getattr(self, name)
+            if not os.path.isabs(path):
+                setattr(self, name, os.path.normpath(os.path.join(_BACKEND_DIR, path)))
+        return self
 
     @model_validator(mode="after")
     def _derive_database_url(self):

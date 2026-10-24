@@ -34,10 +34,41 @@ def _keywords(text: str) -> List[str]:
     return out[:40]
 
 
+def _best_window(lines: List[str], terms: List[str]) -> tuple[int, int]:
+    """[start, end) line range of at most _MAX_FILE_CHARS with the most query-term hits.
+
+    Large files used to be cut at the start, so the planner often saw only imports
+    and never the code the issue was about.
+    """
+    hits = [sum(1 for t in terms if t in line.lower()) for line in lines] if terms else [0] * len(lines)
+    sizes = [len(line) + 1 for line in lines]
+
+    def end_for(start: int) -> int:
+        used, end = 0, start
+        while end < len(lines) and used + sizes[end] <= _MAX_FILE_CHARS:
+            used += sizes[end]
+            end += 1
+        return max(end, start + 1)
+
+    best = (0, end_for(0))
+    best_score = sum(hits[best[0]:best[1]])
+    for start in range(10, len(lines), 10):
+        end = end_for(start)
+        score = sum(hits[start:end])
+        if score > best_score:
+            best, best_score = (start, end), score
+    return best
+
+
 class ContextBuilder:
     def __init__(self, db: Session):
         self.db = db
         self.max_chunks = getattr(settings, "MAX_CONTEXT_CHUNKS", 10)
+        self.retriever = None
+        if db is None:
+            # No index to search (e.g. benchmark runs): lexical retrieval only, and
+            # no need to load the embedding model.
+            return
         try:
             from app.services.code_retriever import CodeRetriever
             self.retriever = CodeRetriever(db)
@@ -50,6 +81,7 @@ class ContextBuilder:
                       tracked_files: List[str] | None = None) -> List[RetrievedContextChunk]:
         search_query = f"{analysis.problem_summary} {analysis.current_behavior} {' '.join(analysis.affected_areas)}"
         tracked = set(tracked_files or [])
+        terms = _keywords(search_query + " " + analysis.expected_behavior)
         contexts: List[RetrievedContextChunk] = []
 
         # 1. Files the analysis named explicitly (only if they really exist).
@@ -59,7 +91,7 @@ class ContextBuilder:
                 if path in tracked:
                     content = read_repo_file(workspace_path, path)
                     if content is not None:
-                        contexts.append(self._chunk(path, content, 1.0))
+                        contexts.append(self._chunk(path, content, 1.0, terms))
 
         # 2. Semantic retrieval over the indexed chunks.
         if self.retriever is not None:
@@ -77,7 +109,7 @@ class ContextBuilder:
 
         # 3. Lexical retrieval over the actual checkout.
         if workspace_path and tracked:
-            contexts.extend(self._lexical_search(workspace_path, tracked, search_query + " " + analysis.expected_behavior))
+            contexts.extend(self._lexical_search(workspace_path, tracked, terms))
 
         deduped, seen = [], set()
         for c in contexts:
@@ -89,15 +121,20 @@ class ContextBuilder:
         return deduped[: max(self.max_chunks, 1) * 2]
 
     @staticmethod
-    def _chunk(path: str, content: str, score: float) -> RetrievedContextChunk:
+    def _chunk(path: str, content: str, score: float, terms: List[str] = ()) -> RetrievedContextChunk:
+        """The whole file if small, else the window of _MAX_FILE_CHARS with the most query-term hits."""
+        lines = content.split("\n")
+        start, end = 0, len(lines)
         if len(content) > _MAX_FILE_CHARS:
-            content = content[:_MAX_FILE_CHARS] + "\n...(truncated)..."
-        return RetrievedContextChunk(
-            file_path=path, start_line=1, end_line=len(content.split("\n")), content=content, score=score
-        )
+            start, end = _best_window(lines, terms)
+            content = "\n".join(lines[start:end])
+            if start > 0:
+                content = f"...(lines 1-{start} omitted)...\n" + content
+            if end < len(lines):
+                content += "\n...(truncated)..."
+        return RetrievedContextChunk(file_path=path, start_line=start + 1, end_line=end, content=content, score=score)
 
-    def _lexical_search(self, workspace_path: str, tracked: set, query: str) -> List[RetrievedContextChunk]:
-        terms = _keywords(query)
+    def _lexical_search(self, workspace_path: str, tracked: set, terms: List[str]) -> List[RetrievedContextChunk]:
         if not terms:
             return []
         scored = []
@@ -114,4 +151,4 @@ class ContextBuilder:
         scored.sort(key=lambda s: (-s[0], s[1]))
         top = scored[: self.max_chunks]
         best = top[0][0] if top else 1
-        return [self._chunk(path, content, round(score / best, 3)) for score, path, content in top]
+        return [self._chunk(path, content, round(score / best, 3), terms) for score, path, content in top]

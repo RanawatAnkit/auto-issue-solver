@@ -39,12 +39,14 @@ def connect_repository(req: ConnectRepoRequest, db: Session = Depends(get_db), c
     if existing:
         if existing.user_id == current_user.id:
             raise HTTPException(status_code=400, detail="Repository already connected to you.")
-        else:
-            # Transfer unclaimed
-            existing.user_id = current_user.id
-            db.commit()
-            db.refresh(existing)
-            return existing
+        if existing.user_id is not None:
+            # Never hand another user's repository (and its runs) to whoever asks next.
+            raise HTTPException(status_code=409, detail="Repository is already connected by another user.")
+        # Created by a webhook before anyone connected it: claim it.
+        existing.user_id = current_user.id
+        db.commit()
+        db.refresh(existing)
+        return existing
 
     new_repo = Repository(
         user_id=current_user.id,
