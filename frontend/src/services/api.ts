@@ -128,12 +128,14 @@ export const getEvaluationStatus = async (): Promise<EvaluationJobStatus> => {
 export const triggerEvaluationRun = async (
     taskIds: string[] | undefined,
     mode: 'agent' | 'gold' = 'agent',
-    allowNetwork = false
+    allowNetwork = false,
+    onlyPending = false
 ): Promise<EvaluationJobStatus> => {
     const response = await apiClient.post<EvaluationJobStatus>('/evaluation/run', {
         task_ids: taskIds && taskIds.length > 0 ? taskIds : undefined,
         mode,
-        allow_network: allowNetwork
+        allow_network: allowNetwork,
+        only_pending: onlyPending
     });
     return response.data;
 };

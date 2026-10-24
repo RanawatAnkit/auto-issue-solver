@@ -58,7 +58,9 @@ class CodingAgent:
         )
         if feedback:
             user += f"\n\nYOUR PREVIOUS ANSWER WAS REJECTED:\n{feedback}\nReturn a corrected set of changes."
-        result = self.llm.generate_structured(SYSTEM_PROMPT, user, response_model)
+        # After a rejection, ask for variation: at temperature 0 a local model tends to
+        # return the identical rejected answer (seen as DUPLICATE_PATCH, NO_PATCH).
+        result = self.llm.generate_structured(SYSTEM_PROMPT, user, response_model, vary=bool(feedback))
         # Per-step schemas are dynamic subclasses; hand the rest of the pipeline the plain contract.
         return result if type(result) is CodeChangePlan else CodeChangePlan.model_validate(result.model_dump())
 

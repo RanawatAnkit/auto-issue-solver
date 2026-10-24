@@ -430,3 +430,75 @@ def test_generate_structured_two_argument_caller_compatibility(mock_post, mock_s
     assert isinstance(res, FailureAnalysis)
     assert res.failure_type == "ASSERTION_ERROR"
     assert res.root_cause == "Expected 2 but got 0"
+
+
+@pytest.mark.parametrize("think, expected", [("", None), ("low", "low"), ("false", False)])
+def test_ollama_reasoning_effort_is_sent_only_when_configured(monkeypatch, think, expected):
+    """gpt-oss spent its whole output budget on hidden reasoning; OLLAMA_THINK limits it."""
+    from pydantic import BaseModel
+
+    class Ok(BaseModel):
+        ok: bool
+
+    monkeypatch.setattr("app.services.llm_service.settings.LLM_PROVIDER", "ollama")
+    monkeypatch.setattr("app.services.llm_service.settings.LLM_FALLBACK_PROVIDER", None)
+    monkeypatch.setattr("app.services.llm_service.settings.OLLAMA_THINK", think)
+    response = MagicMock(status_code=200)
+    response.json.return_value = {"message": {"content": '{"ok": true}'}, "done": True}
+    with patch("app.services.llm_service.httpx.post", return_value=response) as post:
+        assert LLMService().generate_structured("s", "u", Ok).ok
+    payload = post.call_args.kwargs["json"]
+    assert payload.get("think") == expected and ("think" in payload) == (expected is not None)
+
+
+def test_vary_raises_ollama_temperature_only_for_that_call(monkeypatch):
+    """At temperature 0 gpt-oss repeated its rejected edit verbatim; retries ask for variation."""
+    from pydantic import BaseModel
+
+    class Ok(BaseModel):
+        ok: bool
+
+    monkeypatch.setattr("app.services.llm_service.settings.LLM_PROVIDER", "ollama")
+    monkeypatch.setattr("app.services.llm_service.settings.LLM_FALLBACK_PROVIDER", None)
+    response = MagicMock(status_code=200)
+    response.json.return_value = {"message": {"content": '{"ok": true}'}, "done": True}
+    llm = LLMService()
+    with patch("app.services.llm_service.httpx.post", return_value=response) as post:
+        llm.generate_structured("s", "u", Ok, vary=True)
+        llm.generate_structured("s", "u", Ok)
+    temps = [c.kwargs["json"]["options"]["temperature"] for c in post.call_args_list]
+    assert temps == [0.6, 0.0]
+
+
+def test_openai_provider_can_target_compatible_apis(monkeypatch):
+    """Groq, OpenRouter etc. speak the OpenAI API at their own base URL."""
+    monkeypatch.setattr("app.services.llm_service.settings.OPENAI_BASE_URL", "https://api.groq.com/openai/v1")
+    assert LLMService._build_provider_config("openai")["base_url"] == "https://api.groq.com/openai/v1"
+    monkeypatch.setattr("app.services.llm_service.settings.OPENAI_BASE_URL", None)
+    assert LLMService._build_provider_config("openai")["base_url"] is None  # api.openai.com
+
+
+def test_provider_side_schema_rejection_is_retried_as_bad_output(monkeypatch):
+    """Groq answers 400 json_validate_failed when the model's JSON misses the schema: retry, don't give up."""
+    import httpx
+    import openai
+    from pydantic import BaseModel
+
+    class Ok(BaseModel):
+        ok: bool
+
+    monkeypatch.setattr("app.services.llm_service.settings.LLM_PROVIDER", "openai")
+    monkeypatch.setattr("app.services.llm_service.settings.OPENAI_API_KEY", "k")
+    monkeypatch.setattr("app.services.llm_service.settings.MAX_LLM_RETRIES", 1)
+    monkeypatch.setattr("app.services.llm_service.settings.LLM_FALLBACK_PROVIDER", None)
+    request = httpx.Request("POST", "https://api.groq.com/openai/v1/chat/completions")
+    bad = openai.BadRequestError(
+        "Generated JSON does not match the expected schema", response=httpx.Response(400, request=request),
+        body={"error": {"code": "json_validate_failed"}})
+    good = MagicMock()
+    good.choices = [MagicMock(message=MagicMock(parsed=Ok(ok=True)))]
+    client = MagicMock()
+    client.beta.chat.completions.parse.side_effect = [bad, good]
+    with patch("app.services.llm_service.openai.OpenAI", return_value=client):
+        assert LLMService().generate_structured("s", "u", Ok).ok
+    assert client.beta.chat.completions.parse.call_count == 2

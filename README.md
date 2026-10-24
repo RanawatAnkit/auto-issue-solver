@@ -52,7 +52,10 @@ For each task the harness:
 
 1. checks the repository out at `base_commit` (repos are cached in `backend/.eval_cache/`);
 2. runs the same analyzer → planner → coding agent as the production worker, giving it only the
-   problem statement and the checkout, and takes `git diff` as the agent's patch;
+   problem statement and the checkout. If the agent wrote tests, they are run on its change in
+   the task's Docker environment and failures go through the worker's repair loop
+   (`EVAL_REPAIR_ATTEMPTS`, default 2). Doc-only files in the plan are skipped. The final
+   `git diff` is the agent's patch;
 3. applies that patch to a clean checkout, resets the test files touched by the maintainers'
    `test_patch`, and applies it;
 4. builds a Docker image for the task's Python version and pinned dependencies, installs the
@@ -133,6 +136,8 @@ will touch most:
 | `MAX_REPAIR_ATTEMPTS` | `3` | repair loop bound |
 | `TEST_TIMEOUT_SECONDS` | `300` | worker sandbox test timeout |
 | `EVAL_TEST_TIMEOUT_SECONDS` | `1800` | per-task test timeout in the harness |
+| `EVAL_REPAIR_ATTEMPTS` | `2` | repairs when the agent's own tests fail (harness) |
+| `PLAN_MAX_FILES`, `PLAN_MAX_SYMBOLS_PER_FILE` | `4`, `4` | larger plans are sent back to be narrowed |
 | `EVAL_RESULTS_DIR`, `EVAL_CACHE_DIR` | `backend/eval_results`, `backend/.eval_cache` | harness output and repo cache |
 | `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY` | — | GitHub App (path to the `.pem`, kept out of git) |
 | `GITHUB_WEBHOOK_SECRET` | — | webhooks are rejected until set |
@@ -184,9 +189,8 @@ python -m app.eval report
   ending in `NO_PATCH` or an Ollama timeout (`LLM_ERROR`). Bounding the edit lists in the schema
   stopped repeated *edits*, but not repetition inside one edit. Expect useful numbers only from a
   stronger model.
-- **The harness does not run the repair loop.** It grades a single analyze → plan → code pass.
-  The worker's repair loop needs a test environment for the target repo, which for benchmark
-  repos means the harness's Docker images; wiring that in is the next step.
+- **Repair in the harness only has the agent's own tests to go on.** If the agent writes no
+  test, or writes a wrong one, there is no useful feedback before grading.
 - **Only pytest-based repositories** are supported, by both the worker's sandbox and the harness
   (Node `npm test` works in the worker only). Django and SymPy from SWE-bench are not included.
 - **Old `requests` tasks need the network** (they call httpbin.org), so they are graded only with

@@ -104,6 +104,7 @@ def _wrapped(inner: Exception) -> Exception:
     (_wrapped(LLMOutputError("not valid JSON")), harness.NO_PATCH, False),
     (PatchError("search text not found"), harness.NO_PATCH, False),
     (ValueError("Solution Plan validation failed after 3 attempts"), harness.NO_PATCH, False),
+    (_StatusError("Request too large for model on tokens per minute (TPM): Limit 8000", 413), harness.LLM_ERROR, True),
     (KeyError("boom"), harness.HARNESS_ERROR, False),
 ])
 def test_classify_agent_exception(exc, outcome, fatal):
@@ -171,7 +172,7 @@ class FakeSandbox:
 
 def _harness(cache, agent=None, sandbox=None, **kw):
     return Harness(cache_dir=str(cache), sandbox=sandbox or FakeSandbox(),
-                   agent=agent or (lambda ws, task, trace: None), **kw)
+                   agent=agent or (lambda ws, task, trace, run_tests=None: None), **kw)
 
 
 def test_gold_patch_resolves(benchmark):
@@ -183,7 +184,7 @@ def test_gold_patch_resolves(benchmark):
     assert sandbox.calls == [{"test_files": ["test_calc.py"], "network": False}]
 
 
-def _fixing_agent(ws, task, trace):
+def _fixing_agent(ws, task, trace, run_tests=None):
     trace["analysis"], trace["plan"] = {"problem_summary": "x"}, {"summary": "y"}
     with open(os.path.join(ws, "calc.py"), "w", newline="\n") as f:
         f.write("def add(a, b):\n    return a + b\n")
@@ -200,7 +201,7 @@ def test_agent_sees_only_the_problem_statement(benchmark):
     cache, task = benchmark
     seen = {}
 
-    def spy(ws, visible, trace):
+    def spy(ws, visible, trace, run_tests=None):
         seen.update(visible)
         _fixing_agent(ws, visible, trace)
 
@@ -211,7 +212,7 @@ def test_agent_sees_only_the_problem_statement(benchmark):
 def test_wrong_fix_is_unresolved(benchmark):
     cache, task = benchmark
 
-    def wrong(ws, t, trace):
+    def wrong(ws, t, trace, run_tests=None):
         with open(os.path.join(ws, "calc.py"), "w", newline="\n") as f:
             f.write("def add(a, b):\n    return a * b\n")
 
@@ -223,7 +224,7 @@ def test_wrong_fix_is_unresolved(benchmark):
 def test_agent_edits_to_test_files_are_replaced_by_hidden_tests(benchmark):
     cache, task = benchmark
 
-    def cheat(ws, t, trace):
+    def cheat(ws, t, trace, run_tests=None):
         _fixing_agent(ws, t, trace)
         with open(os.path.join(ws, "test_calc.py"), "w", newline="\n") as f:
             f.write("def test_old():\n    assert True\n")  # deletes nothing useful but conflicts with test_patch
@@ -262,7 +263,7 @@ def test_network_tasks_need_explicit_permission(benchmark):
 def test_quota_error_stops_the_batch(benchmark):
     cache, task = benchmark
 
-    def out_of_quota(ws, t, trace):
+    def out_of_quota(ws, t, trace, run_tests=None):
         raise _StatusError("You exceeded your current quota", 429)
 
     tasks = [task, {**task, "instance_id": "pallets__flask-2"}]
@@ -321,9 +322,69 @@ def test_tasks_with_failed_gold_check_do_not_count_as_attempts(tmp_path):
 def test_failed_agent_run_keeps_its_analysis_and_plan(benchmark):
     cache, task = benchmark
 
-    def fails_while_coding(ws, t, trace):
+    def fails_while_coding(ws, t, trace, run_tests=None):
         trace["analysis"], trace["plan"] = {"problem_summary": "x"}, {"summary": "edit calc.py"}
         raise PatchError("search text not found")
 
     result = _harness(cache, agent=fails_while_coding).evaluate(task)
     assert result.outcome == harness.NO_PATCH and result.plan == {"summary": "edit calc.py"}
+
+
+def test_run_agent_runs_its_own_tests_and_repairs_on_failure(tmp_path, monkeypatch):
+    from app.agents.schemas import IssueAnalysis, SolutionPlan, FileChangePlan
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    git(str(ws), "init", "-q")
+    (ws / "calc.py").write_text("def add(a, b):\n    return a - b\n", newline="\n")
+    (ws / "README.md").write_text("calc\n", newline="\n")
+    _commit_all(str(ws), "base")
+
+    analysis = IssueAnalysis(problem_summary="add subtracts", expected_behavior="sum", current_behavior="difference")
+    plan = SolutionPlan(summary="fix add", acceptance_criteria=["add(2,2)==4"], affected_files=[
+        FileChangePlan(path="calc.py", operation="modify", reason="bug"),
+        FileChangePlan(path="README.md", operation="modify", reason="docs"),
+        FileChangePlan(path="tests/test_calc.py", operation="create", reason="test")])
+    monkeypatch.setattr("app.agents.issue_analyzer.IssueAnalyzer.analyze", lambda self, *a, **k: analysis)
+    monkeypatch.setattr("app.agents.planner.PlannerAgent.create_plan", lambda self, *a, **k: plan)
+    coded = {}
+
+    def implement(self, workspace, analysis, plan, target_files, **kw):
+        coded["targets"] = list(target_files)
+        return {"changed_files": ["calc.py", "tests/test_calc.py"], "summary": ""}
+    monkeypatch.setattr("app.agents.coding_agent.CodingAgent.implement", implement)
+
+    repairs = {}
+
+    def fake_repair(run_id, initial_context, workspace_path, runner, max_attempts, **kw):
+        repairs.update(first=initial_context["test_result"]["outcome"], attempts=max_attempts, runner=runner)
+        return {"status": "REPAIR_SUCCESS", "attempts": 1, "termination_reason": None,
+                "test_result": {"outcome": "PASSED"}}
+    monkeypatch.setattr("app.workflows.repair_graph.execute_repair_loop", fake_repair)
+
+    ran = []
+
+    def run_tests(workspace, files):
+        ran.append(files)
+        return TestRun(log="FAILED tests/test_calc.py::test_add - assert -2 == 4\n1 failed", exit_code=1,
+                       timed_out=False, duration_seconds=0.1)
+
+    trace = {}
+    harness.run_agent(str(ws), {"instance_id": "x", "repo": "pallets/flask", "problem_statement": "add subtracts"},
+                      trace, run_tests)
+    assert coded["targets"] == ["calc.py", "tests/test_calc.py"] and trace["skipped_doc_files"] == ["README.md"]
+    assert ran == [["tests/test_calc.py"]]
+    assert trace["feedback"]["outcome"] == "TESTS_FAILED"
+    assert repairs["first"] == "TESTS_FAILED" and repairs["runner"].test_files == ["tests/test_calc.py"]
+    assert trace["repair"]["status"] == "REPAIR_SUCCESS" and trace["repair"]["final_outcome"] == "PASSED"
+
+
+def test_per_model_stats_keep_each_models_own_results(tmp_path):
+    """A later, weaker model's NO_PATCH must not hide an earlier model's RESOLVED in the per-model view."""
+    from app.eval.store import by_model
+    store = ResultsStore(str(tmp_path))
+    for model, outcome in (("gemini-x", harness.RESOLVED), ("gpt-oss:20b", harness.NO_PATCH)):
+        store.append(harness.TaskResult(run_id="r", instance_id="a", repo="x", mode=harness.AGENT,
+                                        outcome=outcome, model=model, provider="p"))
+    rows = {r["model"]: r for r in by_model([{"instance_id": "a"}], store)}
+    assert rows["gemini-x"]["resolved_ids"] == ["a"] and rows["gpt-oss:20b"]["resolved"] == 0
+    assert summarize([{"instance_id": "a"}], store)["resolved"] == 0  # headline = latest result of any model

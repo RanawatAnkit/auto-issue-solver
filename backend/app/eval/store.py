@@ -58,6 +58,35 @@ class ResultsStore:
         return latest
 
 
+def pending_tasks(tasks: list[dict], store: ResultsStore) -> list[dict]:
+    """Tasks the agent has not had a fair attempt at yet: never run, or only
+    infrastructure failures (e.g. a spent LLM quota). Used to resume a run."""
+    latest = store.latest(AGENT)
+    return [t for t in tasks
+            if t["instance_id"] not in latest or latest[t["instance_id"]]["outcome"] not in ATTEMPTED_OUTCOMES]
+
+
+def by_model(tasks: list[dict], store: ResultsStore) -> list[dict]:
+    """Per model: its latest result on each task it ran. The headline numbers use the latest result
+    of any model, so a later run with a weaker model would otherwise hide an earlier success."""
+    ids = {t["instance_id"] for t in tasks}
+    latest: dict[str, dict[str, dict]] = {}
+    for record in store.history():
+        if record.get("mode") == AGENT and record["instance_id"] in ids:
+            latest.setdefault(record.get("model") or "unknown", {})[record["instance_id"]] = record
+    rows = []
+    for model, results in latest.items():
+        outcomes = Counter(r["outcome"] for r in results.values())
+        attempted = sum(outcomes[o] for o in ATTEMPTED_OUTCOMES)
+        rows.append({
+            "model": model, "provider": next(iter(results.values())).get("provider"),
+            "evaluated": len(results), "attempted": attempted, "resolved": outcomes[RESOLVED],
+            "resolved_ids": sorted(k for k, r in results.items() if r["outcome"] == RESOLVED),
+            "outcomes": dict(outcomes),
+        })
+    return sorted(rows, key=lambda r: (-r["resolved"], r["model"]))
+
+
 def summarize(tasks: list[dict], store: ResultsStore) -> dict:
     """Headline numbers over the latest agent result of each benchmark task."""
     ids = {t["instance_id"] for t in tasks}
@@ -90,4 +119,5 @@ def summarize(tasks: list[dict], store: ResultsStore) -> dict:
         "last_provider": last.get("provider") if last else None,
         "last_model": last.get("model") if last else None,
         "dataset": "SWE-bench Lite (subset)",
+        "by_model": by_model(tasks, store),
     }

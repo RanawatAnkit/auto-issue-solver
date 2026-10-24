@@ -184,6 +184,19 @@ export interface EvaluationStats {
     last_provider: string | null;
     last_model: string | null;
     dataset: string;
+    by_model: EvaluationModelStats[];
+}
+
+// Latest result of each model on each task it ran; the headline numbers only keep
+// the latest result of any model per task.
+export interface EvaluationModelStats {
+    model: string;
+    provider: string | null;
+    evaluated: number;
+    attempted: number;
+    resolved: number;
+    resolved_ids: string[];
+    outcomes: Partial<Record<EvaluationOutcome, number>>;
 }
 
 export interface EvaluationJobStatus {

@@ -45,6 +45,9 @@ class Settings(BaseSettings):
     GIT_AUTHOR_NAME: str = "auto-issue-solver[bot]"
     GIT_AUTHOR_EMAIL: str = "auto-issue-solver@users.noreply.github.com"
     MAX_CHANGED_FILES: int = 20
+    # Plan size limits; larger plans are sent back to the planner to be narrowed.
+    PLAN_MAX_FILES: int = 4
+    PLAN_MAX_SYMBOLS_PER_FILE: int = 4
     MAX_DIFF_BYTES: int = 500000
     ALLOW_FILE_DELETE: bool = False
 
@@ -53,7 +56,12 @@ class Settings(BaseSettings):
     EMBEDDING_BATCH_SIZE: int = 100
     LLM_PROVIDER: str = "ollama"
     OPENAI_MODEL: str = 'gpt-4o'
+    # Point the "openai" provider at any OpenAI-compatible API, e.g. https://api.groq.com/openai/v1
+    OPENAI_BASE_URL: str | None = None
     MAX_LLM_RETRIES: int = 2
+    # A 429 whose retry delay is at most this many seconds (per-minute limits) is
+    # waited out; longer delays (daily quotas) fail immediately.
+    LLM_RATE_LIMIT_MAX_WAIT_SECONDS: int = 90
     MAX_CONTEXT_CHUNKS: int = 10
     MAX_CONTEXT_TOKENS: int = 12000
     MAX_FILE_SIZE_MB: int = 1
@@ -76,12 +84,17 @@ class Settings(BaseSettings):
     # truncates long prompts from the front, dropping the system instructions.
     OLLAMA_NUM_CTX: int = 16384
     OLLAMA_NUM_PREDICT: int = 4096
+    # Reasoning effort for thinking models: "low"/"medium"/"high" (gpt-oss) or "true"/"false".
+    # Empty: not sent (models without a reasoning mode reject the parameter).
+    OLLAMA_THINK: str = ""
 
     # SWE-bench harness (python -m app.eval). Relative paths are resolved against backend/.
     EVAL_CACHE_DIR: str = os.path.join(_BACKEND_DIR, ".eval_cache")
     EVAL_RESULTS_DIR: str = os.path.join(_BACKEND_DIR, "eval_results")
     EVAL_TEST_TIMEOUT_SECONDS: int = 1800
     EVAL_MEMORY_LIMIT: str = "2g"
+    # Repair attempts when the agent's own tests fail on its patch (0 disables repair).
+    EVAL_REPAIR_ATTEMPTS: int = 2
 
     model_config = SettingsConfigDict(
         env_file=os.path.join(_BACKEND_DIR, "..", ".env"),

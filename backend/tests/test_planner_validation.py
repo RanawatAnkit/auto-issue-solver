@@ -74,3 +74,33 @@ def test_unsafe_paths_rejected(path):
 ])
 def test_is_test_file(path, expected):
     assert is_test_file(path) is expected
+
+
+def test_oversized_plans_are_sent_back_to_be_narrowed():
+    from app.agents.planner import PlannerAgent
+    from app.agents.schemas import SolutionPlan, FileChangePlan
+    files = [f"src/m{i}.py" for i in range(6)]
+    wide = SolutionPlan(summary="s", acceptance_criteria=["a"], affected_files=[
+        FileChangePlan(path=p, operation="modify", reason="r") for p in files])
+    with pytest.raises(ValueError, match="at most 4"):
+        PlannerAgent().validate_plan(wide, files)
+    deep = SolutionPlan(summary="s", acceptance_criteria=["a"], affected_files=[
+        FileChangePlan(path="src/m0.py", operation="modify", reason="r", symbols=[f"f{i}" for i in range(10)])])
+    with pytest.raises(ValueError, match="symbols"):
+        PlannerAgent().validate_plan(deep, files)
+
+
+def test_persistently_oversized_plan_is_trimmed_not_fatal(monkeypatch):
+    """Run 14 failed with 'Plan touches 5 files' after 3 attempts; size limits must not kill a run."""
+    from app.agents.planner import PlannerAgent
+    from app.agents.schemas import IssueAnalysis, SolutionPlan, FileChangePlan
+    files = ["app/main.py", "app/models.py", "app/routes.py", "README.md", "tests/test_main.py"]
+    plan = SolutionPlan(summary="s", acceptance_criteria=["a"], affected_files=[
+        FileChangePlan(path=p, operation="modify", reason="r", symbols=[f"f{i}" for i in range(6)]) for p in files])
+    agent = PlannerAgent()
+    monkeypatch.setattr(agent.llm, "generate_structured", lambda *a, **k: plan.model_copy(deep=True))
+    analysis = IssueAnalysis(problem_summary="p", expected_behavior="e", current_behavior="c")
+    result = agent.create_plan(analysis, [], "o/r", files)
+    kept = [f.path for f in result.affected_files]
+    assert len(kept) == 4 and "README.md" not in kept and "tests/test_main.py" in kept
+    assert all(len(f.symbols) == 4 for f in result.affected_files)

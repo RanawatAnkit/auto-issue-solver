@@ -395,10 +395,10 @@ export const Evaluation: React.FC = () => {
         return () => clearInterval(timer);
     }, [job.running, loadData]);
 
-    const startRun = async (taskIds: string[] | undefined, mode: 'agent' | 'gold') => {
+    const startRun = async (taskIds: string[] | undefined, mode: 'agent' | 'gold', onlyPending = false) => {
         setError(null);
         try {
-            setJob(await triggerEvaluationRun(taskIds, mode, allowNetwork));
+            setJob(await triggerEvaluationRun(taskIds, mode, allowNetwork, onlyPending));
         } catch (err) {
             setError(errorMessage(err, 'Could not start the evaluation run'));
         }
@@ -486,6 +486,15 @@ export const Evaluation: React.FC = () => {
                     >
                         <ShieldCheck size={16} />
                         <span>Validate environments</span>
+                    </button>
+                    <button
+                        onClick={() => startRun(undefined, 'agent', true)}
+                        disabled={job.running}
+                        className="flex items-center gap-2 px-4 py-2.5 rounded-lg font-medium text-slate-200 bg-slate-800 hover:bg-slate-700 border border-slate-700 transition-colors disabled:opacity-50"
+                        title="Only tasks with no agent attempt yet: never run, or stopped by an LLM/environment error (e.g. a spent quota)"
+                    >
+                        <Play size={16} />
+                        <span>Run remaining</span>
                     </button>
                     <button
                         onClick={() => startRun(undefined, 'agent')}

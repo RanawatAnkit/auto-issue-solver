@@ -37,6 +37,28 @@ def _traceback_files(test_result: dict, tracked: set) -> List[str]:
     return found
 
 
+def _dependency_hint(test_result: dict, tracked: set) -> tuple[str, str | None]:
+    """For a missing third-party package: a note for the model and the manifest it should edit.
+
+    The sandbox installs only what the repository declares, so `import flask` with no
+    `flask` in requirements.txt fails no matter how the code is changed. Without saying
+    so, the model keeps editing the source and the loop ends in REPEATED_FAILURE.
+    """
+    from app.sandbox.test_runner import DEPENDENCY_ERROR, _local_module_names
+    if test_result.get("outcome") != DEPENDENCY_ERROR:
+        return "", None
+    output = (test_result.get("stdout") or "") + "\n" + (test_result.get("stderr") or "")
+    local = _local_module_names(tracked)
+    missing = sorted({m for m in re.findall(r"No module named '([^'.]+)", output) if m not in local})
+    if not missing:
+        return "", None
+    manifest = next((m for m in ("requirements.txt", "pyproject.toml", "setup.py") if m in tracked), "requirements.txt")
+    note = (f"NOTE: the test sandbox only installs packages declared in the repository's dependency files. "
+            f"Missing third-party module(s): {', '.join(missing)}. If the code needs them, declare them in "
+            f"{manifest} (use the PyPI package name); changing the source cannot install a package.\n\n")
+    return note, manifest
+
+
 def _is_environment_failure(test_result: dict, baseline: dict | None) -> bool:
     verification = test_result.get("verification")
     if isinstance(verification, dict) and verification.get("valid") is False:
@@ -50,14 +72,18 @@ def _is_environment_failure(test_result: dict, baseline: dict | None) -> bool:
 
 
 def execute_repair_loop(run_id: int, initial_context: dict, workspace_path: str = None,
-                        on_progress: Optional[Callable[[str, str], None]] = None) -> dict:
+                        on_progress: Optional[Callable[[str, str], None]] = None,
+                        runner=None, max_attempts: int | None = None) -> dict:
     '''
     Bounded repair loop: analyze the failing test output, plan a targeted repair,
     apply validated edits and re-run the tests, until the tests pass or a limit
     (attempts, time budget, repeated identical failure, environment failure) is hit.
     Success is only reported when the sandbox tests actually pass.
+
+    `runner` is anything with run_tests() returning a TestRunner-style result
+    (default: the worker's sandbox TestRunner for this workspace).
     '''
-    MAX_ATTEMPTS = getattr(settings, "MAX_REPAIR_ATTEMPTS", 3)
+    MAX_ATTEMPTS = max_attempts if max_attempts is not None else getattr(settings, "MAX_REPAIR_ATTEMPTS", 3)
     time_budget = getattr(settings, "REPAIR_TIME_BUDGET_SECONDS", 3600)
     history: List[Dict[str, Any]] = []
     progress = on_progress or (lambda status, step: None)
@@ -76,7 +102,7 @@ def execute_repair_loop(run_id: int, initial_context: dict, workspace_path: str 
     analyzer = FailureAnalyzer()
     planner = RepairPlanner()
     coder = CodingAgent()
-    runner = TestRunner(workspace_path)
+    runner = runner or TestRunner(workspace_path)
 
     started = time.monotonic()
     seen_signatures = {failure_signature(last_test_res)}
@@ -100,9 +126,10 @@ def execute_repair_loop(run_id: int, initial_context: dict, workspace_path: str 
             return result("REPAIR_EXHAUSTED", "TIME_BUDGET", attempt - 1)
 
         tracked_now = set(list_tracked_files(workspace_path)) | set(modified_files)
-        test_output = (last_test_res.get("stdout") or "") + "\n" + (last_test_res.get("stderr") or "")
+        dep_note, manifest = _dependency_hint(last_test_res, tracked_now)
+        test_output = dep_note + (last_test_res.get("stdout") or "") + "\n" + (last_test_res.get("stderr") or "")
         tb_files = _traceback_files(last_test_res, tracked_now)
-        code_context, _ = files_block(workspace_path, modified_files + tb_files, 12000)
+        code_context, _ = files_block(workspace_path, ([manifest] if manifest else []) + modified_files + tb_files, 12000)
         attempt_record: Dict[str, Any] = {"attempt": attempt}
 
         # 1. Failure analysis
@@ -150,6 +177,8 @@ def execute_repair_loop(run_id: int, initial_context: dict, workspace_path: str 
                 targets.append(p)
         if not targets:
             targets = [p for p in modified_files + tb_files if p in tracked_now]
+        if manifest and manifest not in targets:
+            targets.insert(0, manifest)  # the one file that can fix a missing package
         attempt_record["target_files"] = targets
         if not targets:
             history.append({**attempt_record, "error": "Repair plan did not identify any repository file to change."})

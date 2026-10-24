@@ -11,7 +11,7 @@ import sys
 
 from app.config import settings
 from app.eval.harness import AGENT, GOLD, Harness, load_tasks, new_run_id
-from app.eval.store import ResultsStore, summarize
+from app.eval.store import ResultsStore, pending_tasks, summarize
 
 
 def _select(tasks: list[dict], ids: list[str], repo: str | None) -> list[dict]:
@@ -36,6 +36,11 @@ def _print_summary(tasks: list[dict], store: ResultsStore) -> None:
         print(f"Resolution rate: {s['resolution_rate_total']}% of all tasks, {attempted} of attempted tasks")
     print("Outcomes: " + (", ".join(f"{k}={v}" for k, v in sorted(s["outcomes"].items())) or "none yet"))
     print(f"Environments validated with gold patches: {s['environment_validated']}/{s['environment_checked']} checked")
+    if s["by_model"]:
+        print("\nPer model (latest result of each model on each task it ran):")
+        for m in s["by_model"]:
+            print(f"  {m['model']:<24} resolved {m['resolved']}/{m['attempted']} attempted ({m['evaluated']} run)"
+                  + (f": {', '.join(m['resolved_ids'])}" if m["resolved_ids"] else ""))
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -51,6 +56,9 @@ def main(argv: list[str] | None = None) -> int:
         p.add_argument("--allow-network", action="store_true",
                        help="let tests that need external services (old psf/requests) use the network")
         p.add_argument("--timeout", type=int, help="test timeout in seconds per task")
+    sub.choices["run"].add_argument(
+        "--pending", action="store_true",
+        help="only tasks without an agent attempt yet (never run, or stopped by an LLM/environment error)")
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -70,6 +78,11 @@ def main(argv: list[str] | None = None) -> int:
 
     selected = _select(tasks, args.ids, args.repo)
     mode = GOLD if args.command == "validate" else AGENT
+    if getattr(args, "pending", False):
+        selected = pending_tasks(selected, store)
+        print(f"{len(selected)} task(s) still pending")
+        if not selected:
+            return 0
     harness = Harness(allow_network=args.allow_network, test_timeout=args.timeout)
     selected, skipped = harness.split_runnable(selected)
     if skipped:

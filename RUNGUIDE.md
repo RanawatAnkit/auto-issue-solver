@@ -39,6 +39,25 @@ OLLAMA_BASE_URL=http://localhost:11434
 OLLAMA_MODEL=qwen2.5-coder:7b
 ```
 
+For `gpt-oss:20b` (works with the agent's JSON mode; ~14 GB, mostly on CPU with a 6 GB GPU) use
+`OLLAMA_TIMEOUT=1200`, `OLLAMA_NUM_CTX=32768`, `OLLAMA_NUM_PREDICT=8192` and `OLLAMA_THINK=low`.
+Its hidden reasoning counts against the output limit; at the default effort it regularly used all
+8192 tokens on reasoning and returned no JSON (10+ minutes per call). With `low`, calls take
+25-100 s. Occasional Ollama "error parsing tool call" 500s with gpt-oss are retried automatically.
+
+**Free hosted models (Groq, OpenRouter, ...).** The `openai` provider talks to any
+OpenAI-compatible API. For Groq (key: https://console.groq.com/keys):
+
+```env
+LLM_PROVIDER=openai
+OPENAI_BASE_URL=https://api.groq.com/openai/v1
+OPENAI_API_KEY=gsk_...
+OPENAI_MODEL=openai/gpt-oss-120b
+```
+
+Calls take a few seconds instead of minutes. A Gemini app subscription (Google AI Pro) does not
+raise Gemini API limits; the API is billed separately.
+
 Do **not** add `/v1` to `OLLAMA_BASE_URL`; the client builds its own paths and a `/v1` suffix
 turns every request into a 404 that looks like "model not found".
 
@@ -157,7 +176,12 @@ python -m app.eval run pallets__flask-4045         # one task
 python -m app.eval run --repo pytest-dev/pytest    # one repository
 python -m app.eval run --allow-network             # the whole benchmark
 python -m app.eval run pallets__flask-4045 --timeout 600
+python -m app.eval run --pending --allow-network   # resume: only tasks without an agent attempt yet
 ```
+
+`--pending` (the dashboard's **Run remaining**) skips tasks the agent already attempted and
+retries those that never ran or were stopped by an LLM or environment error. Use it to continue
+a run that stopped on a quota.
 
 Each line printed is one result: instance, outcome, seconds, detail. A batch stops early (exit
 code 1) on an LLM quota or authentication error.
@@ -254,7 +278,7 @@ docker compose down -v                  # deletes the Postgres and Redis volumes
 
 | Symptom | Cause / fix |
 |---|---|
-| Every eval task is `LLM_ERROR` "quota" | Provider quota is spent. The batch stops after the first one. Switch provider (e.g. `LLM_PROVIDER=ollama`) or wait. |
+| Run stopped with `LLM_ERROR` "quota" | Check the delay in the message. Seconds = per-minute rate limit: these are now waited out automatically (up to `LLM_RATE_LIMIT_MAX_WAIT_SECONDS`, default 90). Hours = daily quota: Gemini's free tier allows about 20 requests per model per day, roughly 2-3 tasks. Enable billing on the key, or continue the next day with `run --pending`. `MAX_LLM_RETRIES=1` lowers calls per task. |
 | "Ollama model ... not found" although `ollama list` shows it | `OLLAMA_BASE_URL` ends in `/v1`; remove it. |
 | `Prompt too large for Ollama context window` | Raise `OLLAMA_NUM_CTX` (and make sure the model supports it). |
 | Ollama times out | 7B models on small GPUs are slow; raise `OLLAMA_TIMEOUT`. |

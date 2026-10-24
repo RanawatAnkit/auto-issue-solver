@@ -7,7 +7,7 @@ from app.api.auth import get_current_user
 from app.config import settings
 from app.eval import jobs
 from app.eval.harness import AGENT, GOLD, load_tasks
-from app.eval.store import ResultsStore, summarize
+from app.eval.store import ResultsStore, pending_tasks, summarize
 from app.models.domain import User
 
 router = APIRouter()
@@ -18,6 +18,8 @@ class RunEvaluationRequest(BaseModel):
     # "gold" grades the reference patches: it checks the environments, not the agent.
     mode: Literal["agent", "gold"] = AGENT
     allow_network: bool = False
+    # Agent mode: skip tasks that already have an agent attempt (resume after e.g. a spent quota).
+    only_pending: bool = False
 
 
 def _store() -> ResultsStore:
@@ -59,6 +61,10 @@ def trigger_evaluation(req: RunEvaluationRequest, current_user: User = Depends(g
         if unknown:
             raise HTTPException(status_code=400, detail=f"Unknown benchmark task(s): {', '.join(unknown)}")
         tasks = [t for t in tasks if t["instance_id"] in req.task_ids]
+    if req.only_pending and req.mode == AGENT:
+        tasks = pending_tasks(tasks, _store())
+        if not tasks:
+            raise HTTPException(status_code=400, detail="No pending tasks: every task already has an agent attempt.")
     try:
         return jobs.runner.start(tasks, mode=GOLD if req.mode == GOLD else AGENT, allow_network=req.allow_network)
     except jobs.JobAlreadyRunning as e:

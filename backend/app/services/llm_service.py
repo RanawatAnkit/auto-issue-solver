@@ -70,6 +70,32 @@ def _is_quota_error(exc: Exception) -> bool:
 
     return False
 
+_RETRY_DELAY_PATTERNS = (
+    re.compile(r"retryDelay['\"]?\s*[:=]\s*['\"]?(\d+(?:\.\d+)?)s"),            # Gemini RetryInfo
+    re.compile(r"retry in (?:(\d+)h)?(?:(\d+)m)?(\d+(?:\.\d+)?)s", re.I),       # "Please retry in 1h2m3s"
+)
+
+
+def retry_delay_seconds(exc: Exception) -> float | None:
+    """Seconds the provider asked us to wait before retrying, if it said so."""
+    response = getattr(exc, "response", None)
+    header = getattr(response, "headers", {}).get("retry-after") if response is not None else None
+    if header:
+        try:
+            return float(header)
+        except ValueError:
+            pass
+    text = str(exc)
+    m = _RETRY_DELAY_PATTERNS[0].search(text)
+    if m:
+        return float(m.group(1))
+    m = _RETRY_DELAY_PATTERNS[1].search(text)
+    if m:
+        hours, minutes, seconds = (float(g) if g else 0.0 for g in m.groups())
+        return hours * 3600 + minutes * 60 + seconds
+    return None
+
+
 def _is_transient_error(exc: Exception) -> bool:
     """Return True for transient server errors worth retrying."""
     status = getattr(exc, "status_code", None) or getattr(exc, "status", None)
@@ -274,7 +300,8 @@ class LLMService:
                 "name": "openai",
                 "api_key": settings.OPENAI_API_KEY,
                 "model": getattr(settings, "OPENAI_MODEL", "gpt-4o"),
-                "base_url": None,
+                # Any OpenAI-compatible API (Groq, OpenRouter, Cerebras, ...); None = api.openai.com.
+                "base_url": _setting("OPENAI_BASE_URL", "", str).strip() or None,
                 "is_ollama": False,
             }
         elif provider_name == "gemini":
@@ -329,10 +356,12 @@ class LLMService:
                 client = openai.OpenAI(api_key=cfg["api_key"])
 
         feedback: list[dict] = []
-        timeouts = 0
+        timeouts = rate_limit_waits = 0
         last_error: Exception | None = None
         attempts = self.max_retries + 1
-        for attempt in range(1, attempts + 1):
+        attempt = 0
+        while attempt < attempts:
+            attempt += 1
             started = time.monotonic()
             try:
                 if cfg["is_ollama"]:
@@ -351,7 +380,19 @@ class LLMService:
                     cfg["name"], cfg["model"], response_model.__name__, attempt, attempts,
                     time.monotonic() - started, type(e).__name__, _sanitize(str(e)),
                 )
-                if _is_quota_error(e) or _is_non_retryable(e):
+                if _is_quota_error(e):
+                    # Per-minute limits come with a short retry delay worth waiting out;
+                    # daily quotas (delay of hours) are raised so the caller can stop.
+                    delay = retry_delay_seconds(e)
+                    max_wait = _setting("LLM_RATE_LIMIT_MAX_WAIT_SECONDS", 90, int)
+                    if delay is not None and delay <= max_wait and rate_limit_waits < 3:
+                        rate_limit_waits += 1
+                        logger.warning("Rate limited by %s; waiting %.0fs before retrying", cfg["name"], delay)
+                        time.sleep(delay + 1)
+                        attempt -= 1  # waiting out a rate limit is not a failed attempt
+                        continue
+                    raise
+                if _is_non_retryable(e):
                     raise
                 if isinstance(e, (LLMTimeoutError, openai.APITimeoutError)):
                     timeouts += 1
@@ -390,6 +431,13 @@ class LLMService:
             )
         except (ValidationError, openai.LengthFinishReasonError, openai.ContentFilterFinishReasonError) as e:
             raise LLMOutputError(f"Structured output rejected: {e}") from e
+        except openai.BadRequestError as e:
+            # Some providers (Groq: json_validate_failed) validate the model's JSON server-side and
+            # answer 400 when it does not match. That is bad model output, worth a retry, not a bad request.
+            text = str(e).lower()
+            if "json_validate_failed" in text or "does not match the expected schema" in text:
+                raise LLMOutputError(f"Provider rejected the model's JSON: {_sanitize(str(e), 400)}") from e
+            raise
         parsed = response.choices[0].message.parsed
         if parsed is None:
             raise LLMOutputError("Parsed structured output returned Null.")
@@ -440,8 +488,14 @@ class LLMService:
             "messages": messages,
             "format": schema,
             "stream": False,
-            "options": {"temperature": 0, "num_ctx": num_ctx, "num_predict": num_predict},
+            "options": {"temperature": getattr(self, "_ollama_temperature", 0.0),
+                        "num_ctx": num_ctx, "num_predict": num_predict},
         }
+        # Reasoning models (gpt-oss: "low"/"medium"/"high", others: true/false). Their hidden
+        # reasoning counts against num_predict and can use all of it before any JSON is written.
+        think = _setting("OLLAMA_THINK", "", str).strip().lower()
+        if think:
+            payload["think"] = {"true": True, "false": False}.get(think, think)
 
         endpoint = f"{base_url}/api/chat"
         try:
@@ -510,8 +564,15 @@ class LLMService:
         system_prompt: str,
         user_prompt: str = None,
         response_model: Type[T] = None,
+        vary: bool = False,
     ) -> T:
-        """Generate a validated structured response, or raise. Never returns placeholder data."""
+        """Generate a validated structured response, or raise. Never returns placeholder data.
+
+        vary=True asks for a different answer than last time: local models run at
+        temperature 0 and otherwise repeat a rejected answer word for word. Cloud
+        providers already sample at their default temperature and are left alone.
+        """
+        self._ollama_temperature = 0.6 if vary else 0.0
         # Normalize 2-argument calls: generate_structured(prompt, ResponseModel)
         if response_model is None and isinstance(user_prompt, type) and issubclass(user_prompt, BaseModel):
             response_model = user_prompt

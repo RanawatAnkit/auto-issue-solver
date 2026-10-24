@@ -72,6 +72,8 @@ class TaskResult:
     plan: dict | None = None
     test_log_tail: str = ""
     stage_seconds: dict = field(default_factory=dict)
+    # What the agent did besides analysis and plan: skipped doc files, its own tests, repairs.
+    agent_trace: dict | None = None
     # LLM errors that will repeat for every remaining task (quota, bad key/model).
     fatal: bool = False
     # Written to the artifacts directory, not into the history record.
@@ -108,6 +110,10 @@ def classify_agent_exception(exc: Exception) -> AgentStageError:
     message = str(exc)[:1500]
     if any(isinstance(e, PatchError) for e in chain):
         return AgentStageError(NO_PATCH, f"No applicable code change: {message}")
+    if "request too large" in message.lower() or any(getattr(e, "status_code", None) == 413 for e in chain):
+        # e.g. Groq's free tier caps one request at its tokens-per-minute limit.
+        return AgentStageError(LLM_ERROR, "Prompt larger than the provider allows per request; lower "
+                               f"MAX_CONTEXT_TOKENS (cloud) or OLLAMA_NUM_CTX (Ollama). {message}", fatal=True)
     if any(_is_quota_error(e) for e in chain):
         return AgentStageError(LLM_ERROR, f"LLM quota or rate limit exhausted: {message}", fatal=True)
     if any(isinstance(e, (openai.AuthenticationError, openai.PermissionDeniedError, openai.NotFoundError,
@@ -146,17 +152,54 @@ def agent_view(task: dict) -> dict:
     return {k: task[k] for k in AGENT_VISIBLE_FIELDS}
 
 
-def run_agent(workspace: str, task: dict, trace: dict) -> None:
+_DOC_SUFFIXES = (".rst", ".md", ".txt")
+
+
+def _is_doc_file(path: str) -> bool:
+    name = path.rsplit("/", 1)[-1].upper()
+    return path.lower().endswith(_DOC_SUFFIXES) or path.startswith(("docs/", "doc/")) or name.startswith("CHANGES")
+
+
+class FeedbackRunner:
+    """TestRunner-shaped wrapper (the interface the repair loop expects) around the task's Docker environment."""
+
+    def __init__(self, run_tests: Callable[[str, list[str]], "TestRun"], workspace: str, test_files: list[str]):
+        self._run, self.workspace, self.test_files = run_tests, workspace, test_files
+
+    def run_tests(self, *_args, **_kwargs) -> dict:
+        from app.sandbox.test_runner import (ENVIRONMENT_ERROR, PASSED, TIMEOUT, _summary_counts,
+                                             classify_pytest_result)
+        from app.services.repository_scanner import list_tracked_files
+        command = ["pytest", "-rA", *self.test_files]
+        try:
+            run = self._run(self.workspace, self.test_files)
+        except EnvironmentFailure as e:
+            return {"success": False, "outcome": ENVIRONMENT_ERROR, "exit_code": 127, "stdout": "",
+                    "stderr": str(e)[-3000:], "summary": {}, "command": command}
+        outcome = TIMEOUT if run.timed_out else classify_pytest_result(
+            run.exit_code, run.log, list_tracked_files(self.workspace))
+        return {"success": outcome == PASSED, "outcome": outcome, "exit_code": run.exit_code,
+                "stdout": run.log[-100_000:], "stderr": "", "summary": _summary_counts(run.log),
+                "command": command, "duration_seconds": run.duration_seconds}
+
+
+def run_agent(workspace: str, task: dict, trace: dict,
+              run_tests: Callable[[str, list[str]], "TestRun"] | None = None) -> None:
     """Run the production agent stages on a checkout; edits land in `workspace`.
 
     Each stage's output is put in `trace` as soon as it exists, so a run that fails
     later (e.g. in code generation) still records the analysis and plan it worked from.
+
+    If the agent wrote or changed tests and `run_tests` is given, those tests run on
+    its change in the task's environment, and failures go through the same bounded
+    repair loop the worker uses. The benchmark's hidden tests are never used here.
     """
     from app.agents.issue_analyzer import IssueAnalyzer
     from app.agents.context_builder import ContextBuilder
-    from app.agents.planner import PlannerAgent
+    from app.agents.planner import PlannerAgent, is_test_file
     from app.agents.coding_agent import CodingAgent
     from app.services.repository_scanner import list_tracked_files
+    from app.workflows.repair_graph import execute_repair_loop
 
     statement = task["problem_statement"].strip()
     title = statement.split("\n", 1)[0][:200]
@@ -168,20 +211,48 @@ def run_agent(workspace: str, task: dict, trace: dict) -> None:
     trace["context_files"] = [c.file_path for c in context]
     plan = PlannerAgent().create_plan(analysis, context, task["repo"], tracked)
     trace["plan"] = plan.model_dump()
-    CodingAgent().implement(
+    targets = [f.path for f in plan.affected_files if f.operation != "delete"]
+    # Documentation is not graded; editing it only costs LLM calls and time.
+    code_targets = [p for p in targets if not _is_doc_file(p)]
+    trace["skipped_doc_files"] = [p for p in targets if p not in code_targets]
+    metrics = CodingAgent().implement(
         workspace,
         analysis=analysis.model_dump(),
         plan=plan.model_dump(),
-        target_files=[f.path for f in plan.affected_files if f.operation != "delete"],
+        target_files=code_targets or targets,
         tracked_files=tracked,
         extra_context_files=[c.file_path for c in context],
     )
+    changed = metrics.get("changed_files", [])
+    own_tests = [p for p in changed if p.endswith(".py") and is_test_file(p)]
+    if run_tests is None or not own_tests:
+        trace["feedback"] = {"ran": False,
+                             "reason": "the agent wrote no tests" if run_tests else "no test environment available"}
+        return
+
+    runner = FeedbackRunner(run_tests, workspace, own_tests)
+    first = runner.run_tests()
+    trace["feedback"] = {"ran": True, "test_files": own_tests, "outcome": first["outcome"],
+                         "summary": first["summary"]}
+    if first["success"]:
+        return
+    repair = execute_repair_loop(
+        run_id=0,
+        initial_context={
+            "issue_context": statement, "solution_plan": trace["plan"], "test_result": first,
+            "baseline_test_result": None, "modified_files": list(changed), "tracked_files": tracked,
+        },
+        workspace_path=workspace, runner=runner,
+        max_attempts=getattr(settings, "EVAL_REPAIR_ATTEMPTS", 2),
+    )
+    trace["repair"] = {k: repair.get(k) for k in ("status", "attempts", "termination_reason")}
+    trace["repair"]["final_outcome"] = (repair.get("test_result") or {}).get("outcome")
 
 
 class Harness:
     def __init__(self, cache_dir: str | None = None, allow_network: bool = False,
                  test_timeout: int | None = None, sandbox: EvalSandbox | None = None,
-                 agent: Callable[[str, dict, dict], None] = run_agent):
+                 agent: Callable[..., None] = run_agent):
         self.repos = RepoCache(cache_dir or settings.EVAL_CACHE_DIR)
         self.allow_network = allow_network
         self.test_timeout = test_timeout or settings.EVAL_TEST_TIMEOUT_SECONDS
@@ -275,16 +346,29 @@ class Harness:
                     result.runtime_seconds, result.detail[:200])
         return result
 
+    def _feedback_tests(self, task: dict) -> Callable[[str, list[str]], "TestRun"] | None:
+        """Runs test files on a working copy in this task's environment (None when it cannot)."""
+        spec = spec_for(task["repo"], task["version"])
+        if spec.needs_network and not self.allow_network:
+            return None
+
+        def run(workspace: str, test_files: list[str]):
+            env_tag = self.sandbox.ensure_env_image(task["repo"], task["version"], spec)
+            return self.sandbox.run_tests(workspace, env_tag, spec, test_files,
+                                          network=spec.needs_network, timeout=self.test_timeout)
+        return run
+
     def _agent_patch(self, task: dict, result: TaskResult) -> str:
         workspace = self.repos.checkout(task["repo"], task["base_commit"])
         try:
             trace: dict = {}
             try:
-                self.agent(workspace, agent_view(task), trace)
+                self.agent(workspace, agent_view(task), trace, self._feedback_tests(task))
             except Exception as e:
                 raise classify_agent_exception(e) from e
             finally:
                 result.analysis, result.plan = trace.get("analysis"), trace.get("plan")
+                result.agent_trace = {k: v for k, v in trace.items() if k not in ("analysis", "plan")}
             return diff_against(workspace, task["base_commit"])
         finally:
             remove_workspace(workspace)
