@@ -229,7 +229,8 @@ def test_symbols_planned_changes_and_tests_are_derived_consistently():
 def _run_planner(index, outputs, analysis=ANALYSIS, locations=()):
     ctx = [RetrievedContextChunk(file_path=p, start_line=1, end_line=len(t.split("\n")), content=t, score=1)
            for p, t in FILES.items()]
-    with patch("app.agents.planner.LLMService") as llm_cls:
+    # Pinned: the local .env may change MAX_LLM_RETRIES, and the scripted answers assume 3 attempts.
+    with patch("app.agents.planner.LLMService") as llm_cls, patch("app.config.settings.MAX_LLM_RETRIES", 2):
         llm = llm_cls.return_value
         llm.prompt_budget_chars.return_value = 60000
         llm.generate_structured.side_effect = outputs

@@ -219,6 +219,27 @@ def draft_tests(draft: SolutionPlanDraft) -> List[tuple]:
     return list(merged.values())
 
 
+class RelatedClassDecision(BaseModel):
+    """Targeted plan repair: the decision for one request/response class the plan left out."""
+    model_config = ConfigDict(extra="forbid")
+    needs_change: bool = Field(description="True if this class must change for the issue.")
+    change: str = _text(160, "One sentence: what changes in this class (e.g. 'add an optional due_date field'), "
+                             "or, if needs_change is false, why it needs no change.")
+    details: str = _text(200, "One sentence: fields, types and validation involved (or 'none').")
+    preserves: str = _text(160, "One sentence: how existing requests and responses keep working (or 'n/a').")
+
+
+def related_class_field(qualname: str) -> str:
+    return "class_" + "".join(ch if ch.isalnum() else "_" for ch in qualname)
+
+
+def related_class_repair_model(class_names: List[str]) -> type[BaseModel]:
+    """One required decision per missing class, so the answer cannot skip any of them."""
+    fields = {related_class_field(name): (RelatedClassDecision, Field(description=f"Decision for class {name}."))
+              for name in class_names}
+    return create_model("RelatedClassRepair", __config__=ConfigDict(extra="forbid"), **fields)
+
+
 def _shown(model: type[BaseModel], field: str, text: str) -> str:
     """Text as stored, visibly marked when decoding stopped it at the schema's length limit."""
     limit = next((m.max_length for m in model.model_fields[field].metadata if hasattr(m, "max_length")), None)
