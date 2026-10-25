@@ -15,7 +15,8 @@ from unittest.mock import patch, MagicMock
 from app.workers.issue_worker import process_agent_run, _fail_interrupted_runs
 from app.db.session import SessionLocal
 from app.models.domain import AgentRun, AgentAction, Issue, Repository, AgentStateEnum, PullRequest
-from app.agents.schemas import IssueAnalysis, SolutionPlan, FileChangePlan, CodeChangePlan, CodeChange, TextEdit
+from app.agents.schemas import (IssueAnalysis, SolutionPlan, FileChangePlan, CodeChangePlan, CodeChange, TextEdit,
+                                LocalizationResult, CodeLocation)
 from app.services.github_service import GitWorkspace
 from app.services.patch_service import PatchService
 
@@ -66,6 +67,8 @@ def env(origin_repo, monkeypatch):
         "runner": patch("app.workers.issue_worker.TestRunner"),
         "repair": patch("app.workers.issue_worker.execute_repair_loop"),
         "indexer": patch("app.services.repository_indexer.RepositoryIndexer"),
+        # Never reach a real model from the worker tests.
+        "localizer": patch("app.workers.issue_worker.Localizer"),
     }
     mocks = {k: p.start().return_value if k not in ("repair",) else p.start() for k, p in patches.items()}
     ws_patch = patch("app.workers.issue_worker.GitWorkspace", LocalWorkspace)
@@ -82,6 +85,7 @@ def env(origin_repo, monkeypatch):
         problem_summary="add subtracts", current_behavior="add(1,1)==0", expected_behavior="add(1,1)==2",
         affected_areas=["calc.py"], constraints=[], acceptance_criteria=["add(1,1)==2"])
     mocks["context"].build_context.return_value = []
+    mocks["localizer"].localize.return_value = LocalizationResult(status="fallback", reason="test")
     mocks["planner"].create_plan.return_value = SolutionPlan(
         summary="Use + in add",
         affected_files=[FileChangePlan(path="calc.py", operation="modify", reason="bug", symbols=["add"], planned_changes=["a + b"])],
@@ -374,3 +378,140 @@ def test_worker_reports_no_valid_patch_accurately(env):
     assert "SYNTAX_ERROR" in run.error_message and "after 3 attempt(s)" in run.error_message
     env["runner"].run_tests.assert_called_once()  # baseline only; no tests on a non-existent change
     env["push"].assert_not_called()
+
+
+# ---- Planning milestone: localization, read-only checkout, usage metering ----
+
+def _actions(db, run):
+    return {a.action_type: a for a in db.query(AgentAction).filter(AgentAction.agent_run_id == run.id).all()}
+
+
+def test_plan_ready_receives_verified_locations_and_leaves_checkout_untouched(env, monkeypatch):
+    monkeypatch.setattr("app.config.settings.ENABLE_CODE_MUTATION", False)
+    loc = CodeLocation(file_path="calc.py", symbol="add", kind="function", start_line=1, end_line=2, snippet="x")
+    env["localizer"].localize.return_value = LocalizationResult(status="localized", locations=[loc], rounds=2)
+    db, repo, issue, run = _make_run()
+
+    process_agent_run({"agent_run_id": run.id, "installation_id": 123})
+    db.refresh(run)
+
+    assert run.status == AgentStateEnum.PLAN_READY
+    kwargs = env["planner"].create_plan.call_args.kwargs
+    assert [l.symbol for l in kwargs["locations"]] == ["add"]
+    assert "calc.py" in kwargs["symbol_index"].python_files  # built from the real checkout
+    assert run.solution_plan["localization"]["status"] == "localized"
+    assert "snippet" not in run.solution_plan["localization"]["locations"][0]
+    actions = _actions(db, run)
+    assert {"symbol_index", "localization", "workspace_check"} <= set(actions)
+    env["coder"].implement.assert_not_called()
+    env["runner"].run_tests.assert_not_called()
+    env["gh"].create_pull_request.assert_not_called()
+    assert _git_out(env["workspaces"][0].workspace_path, "status", "--porcelain") == ""
+
+
+def test_localization_fallback_plans_from_retrieved_context(env, monkeypatch):
+    monkeypatch.setattr("app.config.settings.ENABLE_CODE_MUTATION", False)
+    env["localizer"].localize.side_effect = RuntimeError("unexpected localizer bug")
+    db, repo, issue, run = _make_run()
+
+    process_agent_run({"agent_run_id": run.id, "installation_id": 123})
+    db.refresh(run)
+
+    assert run.status == AgentStateEnum.PLAN_READY
+    assert env["planner"].create_plan.call_args.kwargs["locations"] == []
+    assert run.solution_plan["localization"]["status"] == "fallback"
+    assert "unexpected localizer bug" in run.solution_plan["localization"]["reason"]
+
+
+def test_localization_disabled_skips_localizer(env, monkeypatch):
+    monkeypatch.setattr("app.config.settings.ENABLE_CODE_MUTATION", False)
+    monkeypatch.setattr("app.config.settings.LOCALIZATION_ENABLED", False)
+    db, repo, issue, run = _make_run()
+    process_agent_run({"agent_run_id": run.id, "installation_id": 123})
+    db.refresh(run)
+    assert run.status == AgentStateEnum.PLAN_READY
+    env["localizer"].localize.assert_not_called()
+    assert "localization" not in run.solution_plan
+
+
+@pytest.mark.parametrize("mutation", [False, True])
+def test_workspace_modified_during_planning_fails_before_any_coding(env, monkeypatch, mutation):
+    # Planning must be read-only; with mutation on, the run must still never reach coding.
+    monkeypatch.setattr("app.config.settings.ENABLE_CODE_MUTATION", mutation)
+    def plan_and_scribble(analysis, context, repo_name, tracked, **kwargs):
+        with open(os.path.join(env["workspaces"][0].workspace_path, "calc.py"), "a") as f:
+            f.write("# changed by planning\n")
+        return SolutionPlan(summary="s", affected_files=[FileChangePlan(path="calc.py", operation="modify", reason="r")],
+                            acceptance_criteria=["a"])
+    env["planner"].create_plan.side_effect = plan_and_scribble
+    db, repo, issue, run = _make_run()
+
+    process_agent_run({"agent_run_id": run.id, "installation_id": 123})
+    db.refresh(run)
+
+    assert run.status == AgentStateEnum.FAILED
+    assert run.termination_reason == "WORKSPACE_MODIFIED_DURING_PLANNING"
+    assert "calc.py" in run.error_message
+    env["coder"].implement.assert_not_called()
+    env["runner"].run_tests.assert_not_called()
+    env["gh"].create_pull_request.assert_not_called()
+
+
+def test_llm_usage_is_recorded_per_run(env, monkeypatch):
+    from app.services.llm_service import _record_usage
+    monkeypatch.setattr("app.config.settings.ENABLE_CODE_MUTATION", False)
+    analysis = env["analyzer"].analyze.return_value
+    def analyze_with_usage(*args, **kwargs):
+        _record_usage(provider="ollama", model="m", schema="IssueAnalysis", success=True, error=None,
+                      prompt_tokens=120, completion_tokens=30, duration_seconds=1.5)
+        return analysis
+    env["analyzer"].analyze.side_effect = analyze_with_usage
+    db, repo, issue, run = _make_run()
+
+    process_agent_run({"agent_run_id": run.id, "installation_id": 123})
+
+    import json as _json
+    usage = _json.loads(_actions(db, run)["llm_usage"].output_data)
+    assert usage["calls"] == 1 and usage["prompt_tokens"] == 120 and usage["total_tokens"] == 150
+    assert usage["by_schema"]["IssueAnalysis"]["calls"] == 1
+
+
+def test_seeded_localization_reaches_the_planner_as_unconfirmed(env, monkeypatch):
+    monkeypatch.setattr("app.config.settings.ENABLE_CODE_MUTATION", False)
+    seed = CodeLocation(file_path="calc.py", symbol="add", kind="function", start_line=1, end_line=2)
+    env["localizer"].localize.return_value = LocalizationResult(
+        status="seeded", reason="LLM call failed in round 1 (RuntimeError)", locations=[seed],
+        llm_error="RuntimeError: response failed validation")
+    db, repo, issue, run = _make_run()
+    process_agent_run({"agent_run_id": run.id, "installation_id": 123})
+    db.refresh(run)
+    assert run.status == AgentStateEnum.PLAN_READY
+    kwargs = env["planner"].create_plan.call_args.kwargs
+    assert [l.symbol for l in kwargs["locations"]] == ["add"] and kwargs["locations_confirmed"] is False
+    action = _actions(db, run)["localization"]
+    assert not action.success  # the model's localization failed; seeds are only candidates
+    assert "response failed validation" in action.output_data
+    assert run.solution_plan["localization"]["llm_error"] == "RuntimeError: response failed validation"
+
+
+def test_confirmed_localization_is_passed_as_confirmed(env, monkeypatch):
+    monkeypatch.setattr("app.config.settings.ENABLE_CODE_MUTATION", False)
+    loc = CodeLocation(file_path="calc.py", symbol="add", kind="function", start_line=1, end_line=2)
+    env["localizer"].localize.return_value = LocalizationResult(status="localized", locations=[loc])
+    db, repo, issue, run = _make_run()
+    process_agent_run({"agent_run_id": run.id, "installation_id": 123})
+    db.refresh(run)
+    assert env["planner"].create_plan.call_args.kwargs["locations_confirmed"] is True
+    assert _actions(db, run)["localization"].success
+
+
+def test_planning_failure_is_reported_with_every_rejected_attempt(env, monkeypatch):
+    monkeypatch.setattr("app.config.settings.ENABLE_CODE_MUTATION", False)
+    env["planner"].attempt_errors = ["attempt 1: Plan incomplete: no planned test covers acceptance criteria 2"]
+    env["planner"].create_plan.side_effect = ValueError("Solution Plan validation failed after 3 attempts: Plan incomplete")
+    db, repo, issue, run = _make_run()
+    process_agent_run({"agent_run_id": run.id, "installation_id": 123})
+    db.refresh(run)
+    assert run.status == AgentStateEnum.FAILED and "Plan incomplete" in run.error_message
+    assert "no planned test covers" in _actions(db, run)["plan_rejected_attempts"].output_data
+    env["coder"].implement.assert_not_called()

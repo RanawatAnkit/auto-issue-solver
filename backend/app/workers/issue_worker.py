@@ -9,11 +9,14 @@ from app.services.github_service import GitHubService, GitWorkspace, find_secret
 from app.db.session import SessionLocal
 from app.models.domain import AgentRun, AgentStateEnum, Repository, Issue, AgentAction, PullRequest, TERMINAL_AGENT_STATES
 from app.config import settings
-from app.services.llm_service import verify_ollama_available
+from app.services.llm_service import verify_ollama_available, track_llm_usage, summarize_llm_usage
 from app.services.repository_scanner import RepositoryScanner, list_tracked_files
+from app.services.symbol_index import SymbolIndex
 from app.agents.issue_analyzer import IssueAnalyzer
 from app.agents.context_builder import ContextBuilder
+from app.agents.localizer import Localizer
 from app.agents.planner import PlannerAgent
+from app.agents.schemas import LocalizationResult
 from app.agents.coding_agent import CodingAgent
 from app.services.patch_service import PatchError
 from app.sandbox.test_runner import TestRunner, ENVIRONMENT_OUTCOMES
@@ -83,6 +86,23 @@ def _test_evidence(result: dict | None) -> str:
 
 
 def process_agent_run(payload: dict):
+    with track_llm_usage() as usage:
+        _process_agent_run(payload, usage)
+
+
+def _log_llm_usage(db, agent_run_id, usage: list):
+    if not usage:
+        return
+    try:
+        db.add(AgentAction(agent_run_id=agent_run_id, action_type="llm_usage",
+                           output_data=json.dumps(summarize_llm_usage(usage)), success=True))
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        logger.warning(f"Could not record LLM usage for run {agent_run_id}: {e}")
+
+
+def _process_agent_run(payload: dict, usage: list):
     agent_run_id = payload.get("agent_run_id")
     installation_id = payload.get("installation_id")
 
@@ -145,15 +165,69 @@ def process_agent_run(payload: dict):
         run.issue_analysis = analysis.model_dump()
         tracker.action("issue_analysis", issue.title, run.issue_analysis)
 
-        # Step 3: Context retrieval and planning
+        # Step 3: Context retrieval, localization and planning
         tracker.status(AgentStateEnum.RETRIEVING_CONTEXT, "Retrieving relevant code")
-        context = ContextBuilder(db).build_context(repo.id, analysis, workspace.workspace_path, tracked_files)
+        symbol_index = None
+        try:
+            symbol_index = SymbolIndex.build(workspace.workspace_path, tracked_files)
+            tracker.action("symbol_index", None, {"symbols": len(symbol_index.symbols),
+                                                  "python_files": len(symbol_index.python_files),
+                                                  "not_parsed": sorted(symbol_index.parse_errors)[:50]})
+        except Exception as sym_err:
+            logger.warning(f"Symbol index unavailable; continuing without localization: {sym_err}")
+            tracker.action("symbol_index", None, f"Symbol index failed: {sym_err}", success=False)
+
+        builder = ContextBuilder(db)
+        context = builder.build_context(repo.id, analysis, workspace.workspace_path, tracked_files,
+                                        symbol_index=symbol_index, issue_text=f"{issue.title}\n{issue.body or ''}")
         tracker.action("retrieve_context", None, [c.file_path for c in context])
 
+        localization = None
+        if symbol_index is not None and _flag("LOCALIZATION_ENABLED", True):
+            tracker.status(AgentStateEnum.RETRIEVING_CONTEXT, "Localizing the probable root cause")
+            try:
+                localization = Localizer(symbol_index).localize(
+                    issue.title, issue.body, analysis, getattr(builder, "seed_locations", None), context,
+                    on_round=lambda n, info: tracker.action(f"localization_round_{n}", None, info,
+                                                            success=not info.get("rejected")),
+                )
+            except Exception as loc_err:
+                logger.warning(f"Localization crashed; planning from retrieved context: {loc_err}")
+                localization = LocalizationResult(status="fallback", reason=f"localizer error: {type(loc_err).__name__}: {loc_err}")
+            if isinstance(localization, LocalizationResult):
+                tracker.action("localization", localization.status,
+                               localization.model_dump(exclude={"locations": {"__all__": {"snippet"}}}),
+                               # "seeded" means the model's localization failed: not a success.
+                               success=localization.status == "localized")
+            else:
+                localization = None
+        locations = localization.locations if localization and localization.status in ("localized", "seeded") else []
+        locations_confirmed = bool(localization and localization.status == "localized")
+
         tracker.status(AgentStateEnum.PLANNING, "Generating solution plan")
-        plan = PlannerAgent().create_plan(analysis, context, repo.full_name, tracked_files)
+        planner = PlannerAgent()
+        try:
+            plan = planner.create_plan(analysis, context, repo.full_name, tracked_files,
+                                       locations=locations, symbol_index=symbol_index,
+                                       locations_confirmed=locations_confirmed)
+        finally:
+            rejected_attempts = getattr(planner, "attempt_errors", None)
+            if isinstance(rejected_attempts, list) and rejected_attempts:
+                tracker.action("plan_rejected_attempts", None, rejected_attempts, success=False)
         run.solution_plan = plan.model_dump()
+        if localization is not None:
+            run.solution_plan["localization"] = localization.model_dump(
+                exclude={"locations": {"__all__": {"snippet"}}, "searches": True})
         tracker.action("solution_plan", None, run.solution_plan)
+
+        # Planning is read-only: refuse to go further if anything touched the checkout.
+        modified = list(workspace.changed_files() or [])
+        if modified:
+            tracker.finish(AgentStateEnum.FAILED, "Workspace modified during planning",
+                           error=f"Planning must not modify the repository, but these files changed: {modified[:20]}",
+                           termination_reason="WORKSPACE_MODIFIED_DURING_PLANNING")
+            return
+        tracker.action("workspace_check", base_commit_sha, "Checkout unchanged after planning")
 
         if not _flag("ENABLE_CODE_MUTATION"):
             tracker.finish(AgentStateEnum.PLAN_READY, "Solution plan generated successfully")
@@ -367,6 +441,7 @@ def process_agent_run(payload: dict):
                 logger.info("Workspace cleaned up successfully.")
             except Exception as cleanup_err:
                 logger.warning(f"Workspace cleanup failed: {cleanup_err}")
+        _log_llm_usage(db, agent_run_id, usage)
         db.close()
 
 

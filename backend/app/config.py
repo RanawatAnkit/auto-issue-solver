@@ -55,11 +55,29 @@ class Settings(BaseSettings):
     MAX_CONTEXT_CHUNKS: int = 10
     MAX_CONTEXT_TOKENS: int = 12000
     MAX_FILE_SIZE_MB: int = 1
+    # Symbol-level localization before planning; on any failure the planner
+    # uses the ordinary retrieved context. Rounds are capped at 5 in code.
+    LOCALIZATION_ENABLED: bool = True
+    LOCALIZATION_MAX_ROUNDS: int = 5
+    LOCALIZATION_RESULT_LIMIT: int = 3
+    LOCALIZATION_TIME_BUDGET_SECONDS: int = 900
     CHUNK_SIZE: int = 500
     CHUNK_OVERLAP: int = 50
     OPENAI_API_KEY: str | None = None
     GEMINI_API_KEY: str | None = None
     GEMINI_MODEL: str = "gemini-3.8-flash"
+    # OpenRouter (LLM_PROVIDER=openrouter): one key for many hosted models. Pick a model that
+    # supports structured outputs; ':free' models are rate-limited and may log prompts.
+    OPENROUTER_API_KEY: str | None = None
+    OPENROUTER_MODEL: str | None = None
+    OPENROUTER_BASE_URL: str = "https://openrouter.ai/api/v1"
+    OPENROUTER_TIMEOUT: int = 300
+    OPENROUTER_MAX_TOKENS: int = 4096
+    # Reasoning models spend output tokens thinking; this allowance is added on top of the
+    # answer cap and doubled on demand up to the maximum.
+    OPENROUTER_REASONING_TOKENS: int = 8192
+    OPENROUTER_REASONING_TOKENS_MAX: int = 32768
+    OPENROUTER_CONTEXT_TOKENS: int = 32000
     LLM_FALLBACK_PROVIDER: str | None = None
     # Falling back from a local model to a cloud provider can incur charges, so it
     # must be opted into explicitly.

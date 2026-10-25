@@ -39,3 +39,7 @@ frontend/*_out.txt
 *.tsbuildinfo
 # Private keys
 *.pem
+*.key
+*.p12
+*.pfx
+*private-key*

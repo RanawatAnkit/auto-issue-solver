@@ -174,3 +174,61 @@ def test_live_ollama_issue_analysis():
         "Division by zero in ratio()", "ratio(1, 0) raises ZeroDivisionError; it should return None.",
         "bug", "example/repo", ["calc.py", "tests/test_calc.py"])
     assert res.problem_summary and res.expected_behavior and res.current_behavior
+
+
+# ---- run 326: Gemini rejected the planner schema with "400 Request contains an invalid argument" ----
+
+def test_gemini_is_sent_the_schema_without_array_counts_but_answers_are_still_validated():
+    from app.services.llm_service import _without_array_counts
+    from app.agents.schemas import plan_draft_model
+    model = plan_draft_model(["a"], [1])
+    sent = _without_array_counts(model)
+    text = json.dumps(sent.model_json_schema())
+    assert "minItems" not in text and "maxItems" not in text
+    assert "maxLength" in text and "pattern" in text  # only the rejected keywords are removed
+    assert sent.__name__ == model.__name__
+    import pydantic
+    with pytest.raises(pydantic.ValidationError, match="risks"):
+        sent.model_validate({"summary": "s", "root_cause_hypotheses": [], "affected_files": [], "risks": [],
+                             "assumptions": [], "dependencies": [], "tests_for_criterion_1": []})
+
+
+@patch("app.services.llm_service.settings")
+@patch("app.services.llm_service.openai.OpenAI")
+def test_gemini_call_uses_the_compatible_schema_and_returns_the_requested_class(mock_openai, mock_settings):
+    _settings(mock_settings, LLM_PROVIDER="gemini")
+    parse = mock_openai.return_value.beta.chat.completions.parse
+    def answer(**kwargs):
+        fmt = kwargs["response_format"]
+        assert "minItems" not in json.dumps(fmt.model_json_schema())
+        return MagicMock(choices=[MagicMock(message=MagicMock(parsed=fmt.model_validate(VALID)))])
+    parse.side_effect = answer
+    result = LLMService().generate_structured("sys", "user", IssueAnalysis)
+    assert type(result) is IssueAnalysis and result.problem_summary == "p"
+
+
+@patch("app.services.llm_service.settings")
+@patch("app.services.llm_service.openai.OpenAI")
+def test_openai_keeps_the_full_schema(mock_openai, mock_settings):
+    _settings(mock_settings, LLM_PROVIDER="openai", OPENAI_API_KEY="o-key", OPENAI_MODEL="gpt-x")
+    parse = mock_openai.return_value.beta.chat.completions.parse
+    parse.return_value = MagicMock(choices=[MagicMock(message=MagicMock(parsed=IssueAnalysis(**VALID)))])
+    LLMService().generate_structured("sys", "user", IssueAnalysis)
+    assert parse.call_args.kwargs["response_format"] is IssueAnalysis
+
+
+@patch("app.services.llm_service.time.sleep")
+@patch("app.services.llm_service.settings")
+@patch("app.services.llm_service.openai.OpenAI")
+def test_sdk_side_rejection_feedback_does_not_claim_an_empty_answer(mock_openai, mock_settings, _sleep):
+    import pydantic
+    _settings(mock_settings, LLM_PROVIDER="gemini", MAX_LLM_RETRIES=1)
+    try:
+        IssueAnalysis.model_validate({})
+    except pydantic.ValidationError as err:
+        invalid = err
+    parse = mock_openai.return_value.beta.chat.completions.parse
+    parse.side_effect = [invalid, MagicMock(choices=[MagicMock(message=MagicMock(parsed=IssueAnalysis(**VALID)))])]
+    LLMService().generate_structured("sys", "user", IssueAnalysis)
+    retry = parse.call_args_list[1].kwargs["messages"][-1]["content"]
+    assert "problem_summary" in retry and "contained no text" not in retry
