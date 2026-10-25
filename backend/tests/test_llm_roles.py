@@ -1,13 +1,6 @@
 """Per-purpose LLM selection (LLM_PROVIDER_<ROLE> / LLM_MODEL_<ROLE>)."""
 import pytest
 from unittest.mock import patch
-from app.services import llm_service
-
-# Specification for a feature that is not implemented yet. Skip (instead of failing collection,
-# which stops the whole pytest run) until llm_service provides it; then these tests run as written.
-if not hasattr(llm_service, "resolve_llm_role"):
-    pytest.skip("per-role LLM providers (LLM_PROVIDER_<ROLE>) are not implemented yet", allow_module_level=True)
-
 from app.services.llm_service import LLMService, resolve_llm_role, describe_llm_roles, LLM_ROLES
 
 BASE = dict(
@@ -90,3 +83,24 @@ def test_describe_roles_and_health_endpoint(cfg, client):
                                     "message": "API key configured"}
     assert checks["llm_analysis"]["provider"] == "ollama"
     verify.assert_called_once_with(model="qwen2.5-coder:7b")  # each Ollama model checked once
+
+
+def test_localizer_uses_its_own_role(cfg):
+    from unittest.mock import MagicMock
+    from app.agents.localizer import Localizer
+    from app.agents.schemas import IssueAnalysis
+    cfg(LLM_PROVIDER_LOCALIZATION="gemini", LLM_MODEL_LOCALIZATION="gemini-loc")
+    with patch("app.agents.localizer.LLMService") as llm_cls:
+        llm_cls.return_value.prompt_budget_chars.side_effect = RuntimeError("stop after construction")
+        Localizer(MagicMock()).localize("t", "b", IssueAnalysis(problem_summary="p", expected_behavior="e",
+                                                               current_behavior="c"))
+    llm_cls.assert_called_once_with("localization")
+    assert resolve_llm_role("localization") == ("gemini", "gemini-loc")
+
+
+def test_eval_results_record_every_stage_model_when_they_differ(cfg):
+    from app.eval.harness import llm_identity
+    assert llm_identity() == ("ollama", "qwen2.5-coder:7b")
+    cfg(LLM_PROVIDER_PLANNING="gemini")
+    provider, model = llm_identity()
+    assert provider == "mixed" and "planning=gemini/gemini-x" in model and "analysis=ollama/qwen2.5-coder:7b" in model

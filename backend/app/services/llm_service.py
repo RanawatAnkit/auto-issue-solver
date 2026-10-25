@@ -295,6 +295,33 @@ def verify_ollama_available(base_url: str = None, model: str = None) -> dict:
 # silent fallback must never be able to start charging.
 PAID_PROVIDERS = {"openai", "gemini", "openrouter"}
 
+# Pipeline stages that can each use their own provider/model (LLM_PROVIDER_<ROLE>, LLM_MODEL_<ROLE>).
+LLM_ROLES = ("analysis", "localization", "planning", "coding", "repair")
+
+
+def _global_provider() -> str:
+    raw = getattr(settings, "LLM_PROVIDER", "ollama")
+    return raw.strip().lower() if isinstance(raw, str) and raw.strip() else "ollama"
+
+
+def resolve_llm_role(role: str) -> tuple[str, str]:
+    """(provider, model) for a pipeline stage.
+
+    LLM_PROVIDER_<ROLE> switches the provider (and with it that provider's configured model);
+    LLM_MODEL_<ROLE> overrides the model. Unset values fall back to the global LLM_PROVIDER.
+    """
+    name = (role or "").strip().lower()
+    if name not in LLM_ROLES:
+        raise ValueError(f"Unknown LLM role '{role}'. Known roles: {', '.join(LLM_ROLES)}.")
+    provider = _setting(f"LLM_PROVIDER_{name.upper()}", "", str).strip().lower() or _global_provider()
+    model = _setting(f"LLM_MODEL_{name.upper()}", "", str).strip()
+    return provider, model or LLMService._build_provider_config(provider)["model"]
+
+
+def describe_llm_roles() -> dict:
+    """{role: {"provider", "model"}} for every stage, as currently configured."""
+    return {role: dict(zip(("provider", "model"), resolve_llm_role(role))) for role in LLM_ROLES}
+
 _THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
 # Native tool-call syntaxes (e.g. Poolside '<tool_call>name<arg_key>..', Hermes '<tool_call>{..}', Llama '<function=..>').
 _TOOL_CALL_RE = re.compile(r"<tool_call>|<\|tool_call|<function=|<arg_key>", re.IGNORECASE)
@@ -343,9 +370,14 @@ def _reasoning_tokens(response) -> int | None:
     return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 class LLMService:
-    def __init__(self):
-        raw_provider = getattr(settings, "LLM_PROVIDER", "ollama")
-        self.provider = str(raw_provider).lower() if isinstance(raw_provider, str) else "ollama"
+    def __init__(self, role: str | None = None):
+        """role (e.g. "planning"): use that stage's LLM_PROVIDER_<ROLE> / LLM_MODEL_<ROLE> when set."""
+        self.role = role
+        role_model = None
+        if role is not None:
+            self.provider, role_model = resolve_llm_role(role)
+        else:
+            self.provider = _global_provider()
 
         raw_fallback = getattr(settings, "LLM_FALLBACK_PROVIDER", None)
         if isinstance(raw_fallback, str) and raw_fallback.strip():
@@ -359,6 +391,8 @@ class LLMService:
 
         # Build primary config
         self.primary = self._build_provider_config(self.provider)
+        if role_model:
+            self.primary["model"] = role_model
 
         # Build fallback config (if set and different from primary)
         self.fallback = None

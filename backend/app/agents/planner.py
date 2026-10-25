@@ -7,7 +7,7 @@ from app.config import settings
 from app.services.llm_service import LLMService
 from app.agents.schemas import (IssueAnalysis, RetrievedContextChunk, SolutionPlan, CodeLocation, SolutionPlanDraft,
                                plan_from_draft, plan_draft_model, draft_tests, PlannedChange, FileChangeDraft,
-                               related_class_repair_model, related_class_field)
+                               related_class_repair_model, related_class_field, draft_requirements)
 from app.agents.prompting import head
 
 logger = logging.getLogger(__name__)
@@ -75,6 +75,38 @@ _PACKAGE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._\-]*(\[[\w,\-]+\])?\s*([<>=!~
 _SUITE_CRITERION_RE = re.compile(r"\btests?\b.*\bpass|\bpytest\b|\btest suite\b", re.IGNORECASE)
 
 
+# Assumptions that promise the code will transform or check data ("dates are normalized to UTC").
+_ACTION_CLAIM_RE = re.compile(
+    r"\b(normali[sz](?:e|es|ed|ing)|convert(?:s|ed|ing)?|coerce[sd]?|sanitiz(?:e|es|ed|ing)|"
+    r"truncate[sd]?)\b", re.IGNORECASE)  # not 'parse': "Pydantic parses ISO-8601" is a library fact (false positive)
+
+
+def _files_named_in(text: str, files) -> dict:
+    """{stem: [paths]} for repository files whose name appears as a word in text, e.g. 'README' -> README.md.
+    Short or generic stems are ignored so ordinary words do not count."""
+    named = {}
+    for path in files:
+        stem = os.path.splitext(os.path.basename(path))[0]
+        if len(stem) < 5 or stem.startswith("__") or is_test_file(path):
+            continue
+        if re.search(rf"(?<![\w/.-]){re.escape(stem)}(?![\w-])", text or "", re.IGNORECASE):
+            named.setdefault(stem, []).append(path)
+    return named
+
+
+_DOC_EXTENSIONS = (".md", ".rst", ".txt", ".adoc")
+
+
+def _not_counted(path: str) -> bool:
+    """Test and documentation files, which the grounded size limit does not count."""
+    p = normalize_repo_path(path)
+    return is_test_file(p) or p.lower().endswith(_DOC_EXTENSIONS)
+
+
+def _norm_text(text: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", (text or "").lower()).strip()
+
+
 def is_suite_criterion(criterion: str) -> bool:
     """'Existing tests continue to pass' is met by running the suite, not by writing a dedicated test."""
     return bool(_SUITE_CRITERION_RE.search(criterion))
@@ -127,16 +159,19 @@ def reconcile_repo_path(path: str, available_files: Set[str]) -> str | None:
 
 class PlannerAgent:
     def __init__(self):
-        self.llm = LLMService()
+        self.llm = LLMService("planning")
 
     def _reconcile_file_path(self, path: str, available_files: Set[str]) -> str | None:
         return reconcile_repo_path(path, available_files)
 
     def create_plan(self, analysis: IssueAnalysis, context: List[RetrievedContextChunk], repo_name: str,
                     available_files: List[str] = None, locations: List[CodeLocation] | None = None,
-                    symbol_index=None, locations_confirmed: bool = True) -> SolutionPlan:
+                    symbol_index=None, locations_confirmed: bool = True,
+                    requirements: List[str] | None = None) -> SolutionPlan:
         """locations_confirmed=False: the locations are deterministic candidates (localization fell back),
-        so they are presented as unconfirmed and the plan is not required to cover them."""
+        so they are presented as unconfirmed and the plan is not required to cover them.
+        requirements: explicit requirements taken verbatim from the issue (see agents.requirements); in grounded
+        mode the plan must state how each is met."""
         system = (
             "You are a senior engineer planning a minimal code change that resolves a GitHub issue.\n"
             "Rules:\n"
@@ -170,7 +205,8 @@ class PlannerAgent:
                 "acceptance criterion N (criteria met by the full test suite have no such field), and include every "
                 "test file in affected_files.\n"
                 "- Separate facts from proposals: only state that the code lacks something if the code shown "
-                "confirms it. Put anything you could not confirm in 'assumptions'.\n"
+                "confirms it. Put anything you could not confirm in 'assumptions'. An assumption must not claim "
+                "the code will do something (e.g. 'values are normalized to UTC') unless a planned change does it.\n"
                 f"- Back each root_cause_hypotheses entry with evidence from the code shown: {cite}, and state what "
                 "that code shows TODAY (e.g. 'list_tasks filters only by status and priority'), never what should "
                 "change. Set confidence from how strongly the evidence supports it."
@@ -207,7 +243,11 @@ class PlannerAgent:
         # A fixed, numbered list: the model's tests refer to these numbers instead of re-writing the criteria.
         criteria = [c for c in analysis.acceptance_criteria if c.strip()] or [analysis.expected_behavior]
         testable = [i for i, c in enumerate(criteria, 1) if not is_suite_criterion(c)]
-        draft_model = plan_draft_model(criteria, testable)
+        # Issue requirements that are not already acceptance criteria (those get tests per criterion).
+        known = {_norm_text(c) for c in criteria}
+        requirements = [r for r in (requirements or []) if _norm_text(r) not in known] if symbol_index is not None else []
+        draft_model = plan_draft_model(criteria, testable, requirements)
+        requirements_str = "\n".join(f"{i}. {r}" for i, r in enumerate(requirements, 1))
         criteria_str = "\n".join(
             f"{i}. {c}" + (" [met by running the full test suite; no dedicated test needed]" if is_suite_criterion(c) else "")
             for i, c in enumerate(criteria, 1))
@@ -232,6 +272,9 @@ class PlannerAgent:
             f"Issue Analysis:\n{analysis.model_dump_json(indent=2)}\n\n"
             + (f"Acceptance criteria (a test's 'covers' uses these numbers):\n{criteria_str}\n\n"
                if symbol_index is not None else "")
+            + (f"Requirements stated in the issue (requirement_N must name the planned files, symbols or tests "
+               f"that meet requirement N; documentation requirements need a planned documentation change):\n"
+               f"{requirements_str}\n\n" if requirements_str else "")
             + ((f"Localized Code Locations (verified):\n{location_str}\n\n" if locations_confirmed else
                 f"Candidate Code Locations (exist in the checkout and match names in the issue, but were NOT "
                 f"confirmed as the code to change; check them against the code shown):\n{location_str}\n\n")
@@ -281,12 +324,13 @@ class PlannerAgent:
                         draft = self.llm.generate_structured(system, user, draft_model)
                     repair_target, last_draft = None, draft
                     try:
-                        self.validate_draft(draft, symbol_index, criteria, locations if locations_confirmed else [])
+                        self.validate_draft(draft, symbol_index, criteria, locations if locations_confirmed else [],
+                                            requirements)
                     except DraftIncomplete as incomplete:
                         if incomplete.missing_related and not incomplete.other_errors:
                             repair_target = (draft, incomplete.missing_related)
                         raise
-                    plan = plan_from_draft(draft, criteria)
+                    plan = plan_from_draft(draft, criteria, requirements)
                 else:
                     plan = self.llm.generate_structured(system, user, SolutionPlan)
                 self.validate_plan(plan, normalized_files, symbol_index=symbol_index,
@@ -294,11 +338,14 @@ class PlannerAgent:
                 return plan
             except PlanTooLarge as too_large:
                 last_error = str(too_large)
+                self.attempt_errors.append(f"attempt {attempt + 1} ({mode}): {last_error}")
                 logger.warning(f"Planner plan too large on attempt {attempt + 1}: {too_large}")
                 if attempt == max_retries:
                     # Size limits keep edits focused; they must not make the whole run fail.
                     self._trim_to_limits(plan, keep_tests=symbol_index is not None)
-                    self.validate_plan(plan, normalized_files)
+                    # Re-checked the same way it was checked (grounded counting), or the trimmed plan fails again.
+                    self.validate_plan(plan, normalized_files, symbol_index=symbol_index,
+                                       locations=locations, shown_regions=shown)
                     logger.warning("Using the last plan trimmed to the size limits")
                     return plan
             except ValueError as ve:
@@ -350,7 +397,8 @@ class PlannerAgent:
         return repaired
 
     @staticmethod
-    def validate_draft(draft: SolutionPlanDraft, index, criteria: List[str], locations: List[CodeLocation] = ()):
+    def validate_draft(draft: SolutionPlanDraft, index, criteria: List[str], locations: List[CodeLocation] = (),
+                       requirements: List[str] = ()):
         """Completeness and consistency of the strict planner output, beyond what the schema enforces."""
         errors = []
         n = len(criteria)
@@ -432,6 +480,34 @@ class PlannerAgent:
             errors.append(f"dependencies must be new third-party package names (e.g. 'python-dateutil'), not "
                           f"{bad_deps[:3]}; use [] when no new package is needed.")
 
+        # Every explicit issue requirement must point at work that is actually in the plan (run 332 dropped
+        # the README example), and a repository file the requirement names must be planned.
+        planned_tests = {t.name.strip() for t, _ in draft_tests(draft)}
+        def in_plan(ref: str) -> bool:
+            ref = normalize_repo_path(ref).removesuffix("()")
+            parts = [ref] + [p for p in re.split(r"::|:|#", ref) if p]
+            return any(p in planned_paths or p in planned_tests or covers_class(planned_symbols, p) for p in parts)
+        for i, cov in draft_requirements(draft):
+            req = requirements[i - 1] if 0 < i <= len(requirements) else ""
+            unknown = [r for r in cov.addressed_by if not in_plan(r)]
+            if unknown:
+                errors.append(f"requirement {i} ('{req[:70]}') is addressed by {unknown[:3]}, which the plan does not "
+                              "contain; name planned files, symbols or tests, or plan the missing change.")
+            for stem, paths in _files_named_in(req, index.files).items():
+                if not any(p in planned_paths for p in paths):
+                    errors.append(f"requirement {i} ('{req[:70]}') names {stem}, but {' or '.join(paths[:2])} is not "
+                                  "in affected_files; plan that change.")
+
+        # An assumption must not promise behavior that no planned change implements (run 332: "normalized to UTC").
+        change_text = " ".join(f"{c.change} {c.details} {c.preserves}" for f in draft.affected_files
+                               for c in f.changes).lower()
+        for a in draft.assumptions:
+            for m in _ACTION_CLAIM_RE.finditer(a):
+                if m.group(1).lower()[:5] not in change_text:
+                    errors.append(f"assumption '{a[:90]}' claims behavior ('{m.group(1).lower()}') that no planned "
+                                  "change implements; plan that change or describe it as an open risk.")
+                    break
+
         if errors or related_errors:
             raise DraftIncomplete("Plan incomplete: " + " ".join((related_errors + errors)[:8]),
                                   missing_related=missing_related, other_errors=errors)
@@ -440,8 +516,9 @@ class PlannerAgent:
     def _trim_to_limits(plan: SolutionPlan, keep_tests: bool = False) -> None:
         """Keep source files before tests before docs, up to PLAN_MAX_FILES, and the first symbols of each.
 
-        keep_tests (grounded planning): test files do not count toward the limit and are never dropped,
-        because the grounded plan maps a test to every acceptance criterion.
+        keep_tests (grounded planning): test and documentation files do not count toward the limit and are
+        never dropped: the grounded plan maps a test to every acceptance criterion, and documentation changes
+        are often explicit issue requirements (e.g. a README example).
         """
         max_files = getattr(settings, "PLAN_MAX_FILES", 4)
         max_symbols = getattr(settings, "PLAN_MAX_SYMBOLS_PER_FILE", 4)
@@ -449,8 +526,8 @@ class PlannerAgent:
             p = normalize_repo_path(f.path)
             return (p.lower().endswith((".md", ".rst", ".txt")), is_test_file(p))
         if keep_tests:
-            tests = [f for f in plan.affected_files if is_test_file(normalize_repo_path(f.path))]
-            kept = sorted([f for f in plan.affected_files if f not in tests], key=rank)[:max_files] + tests
+            exempt = [f for f in plan.affected_files if _not_counted(f.path)]
+            kept = sorted([f for f in plan.affected_files if f not in exempt], key=rank)[:max_files] + exempt
         else:
             kept = sorted(plan.affected_files, key=rank)[:max_files]
         plan.affected_files = [f for f in plan.affected_files if f in kept]  # original order
@@ -473,11 +550,12 @@ class PlannerAgent:
         # Oversized plans produce huge, slow edits that small models get wrong; ask for a focused one.
         plan_files = getattr(settings, "PLAN_MAX_FILES", 4)
         if symbol_index is not None:
-            # Grounded plans must include tests for every criterion: the limit caps source files only.
-            counted = [f for f in plan.affected_files if not is_test_file(normalize_repo_path(f.path))]
+            # Grounded plans must include tests for every criterion, and documentation the issue asks for:
+            # the limit caps source files only.
+            counted = [f for f in plan.affected_files if not _not_counted(f.path)]
             if isinstance(plan_files, int) and len(counted) > plan_files:
                 raise PlanTooLarge(f"Plan touches {len(counted)} source files; keep it to at most {plan_files} "
-                                   "(test files are not counted): the essential source files only.")
+                                   "(test and documentation files are not counted): the essential source files only.")
         elif isinstance(plan_files, int) and len(plan.affected_files) > plan_files:
             raise PlanTooLarge(f"Plan touches {len(plan.affected_files)} files; keep it to at most {plan_files}: "
                              "the essential source file(s) and their tests.")

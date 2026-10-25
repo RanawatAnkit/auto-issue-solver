@@ -88,6 +88,18 @@ class Settings(BaseSettings):
     OPENROUTER_REASONING_TOKENS: int = 8192
     OPENROUTER_REASONING_TOKENS_MAX: int = 32768
     OPENROUTER_CONTEXT_TOKENS: int = 32000
+    # Per-stage LLM selection. Empty = use LLM_PROVIDER and that provider's model.
+    # LLM_PROVIDER_<ROLE> switches provider (using its configured model); LLM_MODEL_<ROLE> overrides the model.
+    LLM_PROVIDER_ANALYSIS: str = ""
+    LLM_MODEL_ANALYSIS: str = ""
+    LLM_PROVIDER_LOCALIZATION: str = ""
+    LLM_MODEL_LOCALIZATION: str = ""
+    LLM_PROVIDER_PLANNING: str = ""
+    LLM_MODEL_PLANNING: str = ""
+    LLM_PROVIDER_CODING: str = ""
+    LLM_MODEL_CODING: str = ""
+    LLM_PROVIDER_REPAIR: str = ""
+    LLM_MODEL_REPAIR: str = ""
     LLM_FALLBACK_PROVIDER: str | None = None
     # Falling back from a local model to a cloud provider can incur charges, so it
     # must be opted into explicitly.

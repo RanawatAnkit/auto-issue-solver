@@ -145,7 +145,7 @@ class Localizer:
             return result("fallback", reason, rounds=rounds)
 
         try:
-            llm = self.llm or LLMService()
+            llm = self.llm or LLMService("localization")
             budget = llm.prompt_budget_chars()
         except Exception as e:
             return result("fallback", f"LLM unavailable: {type(e).__name__}: {e}")

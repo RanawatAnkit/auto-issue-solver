@@ -28,16 +28,26 @@ def dependency_check():
     except Exception as e:
         checks["redis"] = {"ok": False, "error": type(e).__name__}
 
-    provider = str(settings.LLM_PROVIDER).lower()
-    if provider == "ollama":
-        from app.services.llm_service import verify_ollama_available
-        result = verify_ollama_available()
-        checks["llm"] = {"ok": result["available"], "provider": provider, "model": settings.OLLAMA_MODEL,
-                         "message": result["message"]}
-    else:
-        key = settings.GEMINI_API_KEY if provider == "gemini" else settings.OPENAI_API_KEY
-        checks["llm"] = {"ok": bool(key), "provider": provider,
-                         "message": "API key configured" if key else f"{provider.upper()}_API_KEY is not set"}
+    # One check per pipeline stage, since each can use its own provider and model.
+    from app.services import llm_service
+    ollama_results = {}  # each local model is checked once even if several stages use it
+    try:
+        roles = llm_service.describe_llm_roles()
+    except Exception as e:  # e.g. an unknown provider name in the configuration
+        roles = {}
+        checks["llm"] = {"ok": False, "error": type(e).__name__, "message": str(e)[:200]}
+    for role, chosen in roles.items():
+        provider, model = chosen["provider"], chosen["model"]
+        if provider == "ollama":
+            if model not in ollama_results:
+                ollama_results[model] = llm_service.verify_ollama_available(model=model)
+            result = ollama_results[model]
+            checks[f"llm_{role}"] = {"ok": result["available"], "provider": provider, "model": model,
+                                     "message": result["message"]}
+        else:
+            key = getattr(settings, f"{provider.upper()}_API_KEY", None)
+            checks[f"llm_{role}"] = {"ok": bool(key), "provider": provider, "model": model,
+                                     "message": "API key configured" if key else f"{provider.upper()}_API_KEY is not set"}
 
     try:
         import docker

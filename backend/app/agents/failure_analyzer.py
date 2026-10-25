@@ -13,7 +13,7 @@ SYSTEM_PROMPT = (
 
 class FailureAnalyzer:
     def __init__(self):
-        self.llm = LLMService()
+        self.llm = LLMService("repair")
 
     def generate_analysis(self, issue_context: str, plan: str, previous_changes: str, test_output: str,
                           code_context: str = "") -> FailureAnalysis:

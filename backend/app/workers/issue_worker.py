@@ -15,6 +15,7 @@ from app.services.symbol_index import SymbolIndex
 from app.agents.issue_analyzer import IssueAnalyzer
 from app.agents.context_builder import ContextBuilder
 from app.agents.localizer import Localizer
+from app.agents.requirements import extract_requirements
 from app.agents.planner import PlannerAgent
 from app.agents.schemas import LocalizationResult
 from app.agents.coding_agent import CodingAgent
@@ -205,11 +206,15 @@ def _process_agent_run(payload: dict, usage: list):
         locations_confirmed = bool(localization and localization.status == "localized")
 
         tracker.status(AgentStateEnum.PLANNING, "Generating solution plan")
+        # Explicit requirements from the issue text itself, so the plan cannot silently drop one.
+        requirements = extract_requirements(issue.body or "")
+        if requirements:
+            tracker.action("issue_requirements", None, requirements)
         planner = PlannerAgent()
         try:
             plan = planner.create_plan(analysis, context, repo.full_name, tracked_files,
                                        locations=locations, symbol_index=symbol_index,
-                                       locations_confirmed=locations_confirmed)
+                                       locations_confirmed=locations_confirmed, requirements=requirements)
         finally:
             rejected_attempts = getattr(planner, "attempt_errors", None)
             if isinstance(rejected_attempts, list) and rejected_attempts:

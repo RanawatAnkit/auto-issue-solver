@@ -115,6 +115,8 @@ class SolutionPlan(BaseModel):
     risks: List[str] = Field(default_factory=list, description="Possible regressions.")
     assumptions: List[str] = Field(default_factory=list, description="Assumptions that were not verified.")
     acceptance_criteria: List[str] = Field(description="Conditions that show the issue is resolved.")
+    # How each explicit requirement from the issue text is met: {"requirement", "addressed_by", "how"}.
+    requirements: List[dict] = Field(default_factory=list)
 
 # ---- Strict planner output -------------------------------------------------
 # The schema the planner model must fill when grounding is available. Every
@@ -191,17 +193,40 @@ class SolutionPlanDraft(BaseModel):
     dependencies: List[PackageName] = Field(max_length=5, description="New third-party package names only (e.g. 'python-dateutil'); usually empty.")
 
 _CRITERION_FIELD = "tests_for_criterion_"
+_REQUIREMENT_FIELD = "requirement_"
 
 
-def plan_draft_model(criteria: List[str], testable: List[int]) -> type[SolutionPlanDraft]:
+class RequirementCoverage(BaseModel):
+    """How one explicit requirement from the issue is met by the plan."""
+    model_config = ConfigDict(extra="forbid")
+    addressed_by: List[Annotated[str, Field(min_length=1, max_length=200)]] = Field(
+        min_length=1, max_length=4,
+        description="Planned file paths, symbols (e.g. 'TaskCreate.due_date') or test names that implement it.")
+    how: str = _text(200, "One sentence: how those planned changes meet the requirement.")
+
+
+def plan_draft_model(criteria: List[str], testable: List[int],
+                     requirements: List[str] = ()) -> type[SolutionPlanDraft]:
     """The planner schema for one call: a required, non-empty test list for each testable criterion
-    (1-based numbers), so coverage is guaranteed by decoding rather than hoped for."""
+    (1-based numbers), and a required coverage entry for each explicit issue requirement, so neither
+    can be skipped: decoding enforces it rather than hoping for it."""
     fields = {
         f"{_CRITERION_FIELD}{i}": (List[PlannedTest], Field(
             min_length=1, max_length=3, description=f"Tests verifying acceptance criterion {i}: {criteria[i - 1][:150]}"))
         for i in testable
     }
+    fields.update({
+        f"{_REQUIREMENT_FIELD}{i}": (RequirementCoverage, Field(description=f"Issue requirement {i}: {req[:150]}"))
+        for i, req in enumerate(requirements, 1)
+    })
     return create_model("SolutionPlanDraft", __base__=SolutionPlanDraft, **fields)
+
+
+def draft_requirements(draft: SolutionPlanDraft) -> List[tuple]:
+    """(requirement number, RequirementCoverage) in order."""
+    names = sorted((n for n in type(draft).model_fields if n.startswith(_REQUIREMENT_FIELD)),
+                   key=lambda n: int(n[len(_REQUIREMENT_FIELD):]))
+    return [(int(n[len(_REQUIREMENT_FIELD):]), getattr(draft, n)) for n in names]
 
 
 def draft_tests(draft: SolutionPlanDraft) -> List[tuple]:
@@ -254,7 +279,8 @@ def _format_change(c: PlannedChange) -> str:
             f"Preserves: {_shown(PlannedChange, 'preserves', c.preserves)}")
 
 
-def plan_from_draft(draft: SolutionPlanDraft, acceptance_criteria: List[str]) -> SolutionPlan:
+def plan_from_draft(draft: SolutionPlanDraft, acceptance_criteria: List[str],
+                    requirements: List[str] = ()) -> SolutionPlan:
     """Derive the stored SolutionPlan; symbols/new_symbols come from the same per-change entries.
 
     Acceptance criteria are the issue analysis's, not re-written by the planner, so that test
@@ -278,6 +304,8 @@ def plan_from_draft(draft: SolutionPlanDraft, acceptance_criteria: List[str]) ->
         risks=draft.risks,
         assumptions=draft.assumptions,
         acceptance_criteria=list(acceptance_criteria),
+        requirements=[{"requirement": requirements[i - 1], "addressed_by": list(cov.addressed_by), "how": cov.how}
+                      for i, cov in draft_requirements(draft) if 0 < i <= len(requirements)],
     )
 
 class TextEdit(BaseModel):

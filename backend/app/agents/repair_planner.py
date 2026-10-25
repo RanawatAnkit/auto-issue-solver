@@ -14,7 +14,7 @@ SYSTEM_PROMPT = (
 
 class RepairPlanner:
     def __init__(self):
-        self.llm = LLMService()
+        self.llm = LLMService("repair")
 
     def generate_plan(self, analysis_json: str, previous_plan: str, context: str, repository_files: str = "") -> RepairPlan:
         user = (

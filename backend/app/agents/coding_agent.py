@@ -47,7 +47,7 @@ SYSTEM_PROMPT = (
 
 class CodingAgent:
     def __init__(self):
-        self.llm = LLMService()
+        self.llm = LLMService("coding")
 
     def generate_changes(self, analysis, plan, files_context: str, feedback: str | None = None,
                          response_model=CodeChangePlan) -> CodeChangePlan:

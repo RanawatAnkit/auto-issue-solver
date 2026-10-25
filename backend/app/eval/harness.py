@@ -135,10 +135,15 @@ def _now() -> str:
 
 
 def llm_identity() -> tuple[str, str]:
-    from app.services.llm_service import LLMService
+    """(provider, model) recorded with a result; per-stage models are listed when stages differ."""
+    from app.services.llm_service import describe_llm_roles
     try:
-        llm = LLMService()
-        return llm.primary["name"], str(llm.primary["model"])
+        roles = describe_llm_roles()
+        distinct = {(r["provider"], r["model"]) for r in roles.values()}
+        if len(distinct) == 1:
+            provider, model = distinct.pop()
+            return provider, str(model)
+        return "mixed", ", ".join(f"{role}={r['provider']}/{r['model']}" for role, r in roles.items())
     except Exception:
         return str(getattr(settings, "LLM_PROVIDER", "unknown")), "unknown"
 

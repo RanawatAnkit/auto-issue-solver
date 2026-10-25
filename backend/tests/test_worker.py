@@ -515,3 +515,16 @@ def test_planning_failure_is_reported_with_every_rejected_attempt(env, monkeypat
     assert run.status == AgentStateEnum.FAILED and "Plan incomplete" in run.error_message
     assert "no planned test covers" in _actions(db, run)["plan_rejected_attempts"].output_data
     env["coder"].implement.assert_not_called()
+
+
+def test_issue_requirements_are_extracted_logged_and_passed_to_the_planner(env, monkeypatch):
+    monkeypatch.setattr("app.config.settings.ENABLE_CODE_MUTATION", False)
+    env["gh"].get_issue.return_value = MagicMock(
+        title="add() subtracts", body="Requirements\n- add() must return a + b\n- Add a README example request.")
+    db, repo, issue, run = _make_run()
+    process_agent_run({"agent_run_id": run.id, "installation_id": 123})
+    db.refresh(run)
+    assert run.status == AgentStateEnum.PLAN_READY
+    assert env["planner"].create_plan.call_args.kwargs["requirements"] == [
+        "add() must return a + b", "Add a README example request."]
+    assert "README example" in _actions(db, run)["issue_requirements"].output_data
