@@ -57,3 +57,12 @@ def test_semantic_retrieval_failure_degrades_gracefully(repo):
     analysis = IssueAnalysis(problem_summary="overdue tasks", expected_behavior="e", current_behavior="c")
     ctx = builder.build_context(1, analysis, repo, list_tracked_files(repo))
     assert any(c.file_path == "app/tasks.py" for c in ctx)
+
+
+def test_large_file_chunk_is_centered_on_query_terms():
+    from app.agents.context_builder import ContextBuilder, _MAX_FILE_CHARS
+    filler = "".join(f"def unrelated_{i}():\n    return {i}\n\n" for i in range(800))
+    content = filler + "def iter_content(self):\n    raise socket_error_here\n" + filler
+    chunk = ContextBuilder._chunk("requests/models.py", content, 1.0, ["iter_content", "socket_error_here"])
+    assert "def iter_content" in chunk.content
+    assert chunk.start_line > 1 and len(chunk.content) < _MAX_FILE_CHARS + 200

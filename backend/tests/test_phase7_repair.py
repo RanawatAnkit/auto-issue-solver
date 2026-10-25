@@ -174,3 +174,14 @@ def test_failure_signature_ignores_timing_noise():
     b = dict(a, stdout=a["stdout"].replace("0.1s", "0.7s"))
     assert failure_signature(a) == failure_signature(b)
     assert failure_signature(a) != failure_signature(_failing("tests/t.py::test_y"))
+
+
+def test_missing_declared_dependency_points_repair_at_requirements():
+    """An import of an undeclared package can only be fixed in the dependency manifest."""
+    from app.workflows.repair_graph import _dependency_hint
+    result = {"outcome": "DEPENDENCY_ERROR",
+              "stdout": "E   ModuleNotFoundError: No module named 'flask'\nE   ModuleNotFoundError: No module named 'server'"}
+    note, manifest = _dependency_hint(result, {"server.py", "requirements.txt", "tests/test_server.py"})
+    assert manifest == "requirements.txt"
+    assert "flask" in note and "server" not in note.split("module(s):")[1].split(".")[0]
+    assert _dependency_hint({"outcome": "TESTS_FAILED", "stdout": "No module named 'flask'"}, set()) == ("", None)

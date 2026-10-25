@@ -200,11 +200,42 @@ def seed_locations(index, hints: IssueHints, limit: int = _SEED_LIMIT) -> List[C
     return ordered[:limit]
 
 
+def _best_window(lines: List[str], terms: List[str]) -> tuple[int, int]:
+    """[start, end) line range of at most _MAX_FILE_CHARS with the most query-term hits.
+
+    Large files used to be cut at the start, so the planner often saw only imports
+    and never the code the issue was about.
+    """
+    hits = [sum(1 for t in terms if t in line.lower()) for line in lines] if terms else [0] * len(lines)
+    sizes = [len(line) + 1 for line in lines]
+
+    def end_for(start: int) -> int:
+        used, end = 0, start
+        while end < len(lines) and used + sizes[end] <= _MAX_FILE_CHARS:
+            used += sizes[end]
+            end += 1
+        return max(end, start + 1)
+
+    best = (0, end_for(0))
+    best_score = sum(hits[best[0]:best[1]])
+    for start in range(10, len(lines), 10):
+        end = end_for(start)
+        score = sum(hits[start:end])
+        if score > best_score:
+            best, best_score = (start, end), score
+    return best
+
+
 class ContextBuilder:
     def __init__(self, db: Session):
         self.db = db
         self.max_chunks = getattr(settings, "MAX_CONTEXT_CHUNKS", 10)
         self.seed_locations: List[CodeLocation] = []
+        self.retriever = None
+        if db is None:
+            # No index to search (e.g. benchmark runs): lexical retrieval only, and
+            # no need to load the embedding model.
+            return
         try:
             from app.services.code_retriever import CodeRetriever
             self.retriever = CodeRetriever(db)
@@ -219,6 +250,7 @@ class ContextBuilder:
         search_query = f"{analysis.problem_summary} {analysis.current_behavior} {' '.join(analysis.affected_areas)}"
         terms = _keywords(search_query + " " + analysis.expected_behavior)
         tracked = set(tracked_files or [])
+        terms = _keywords(search_query + " " + analysis.expected_behavior)
         contexts: List[RetrievedContextChunk] = []
 
         # 0. Code the issue points at directly (tracebacks, paths, identifiers), verified by the symbol index.
@@ -275,19 +307,26 @@ class ContextBuilder:
         return deduped[: max(self.max_chunks, 1) * 2]
 
     @staticmethod
-    def _chunk(path: str, content: str, score: float, source: str = "") -> RetrievedContextChunk:
+    def _chunk(path: str, content: str, score: float, terms: List[str] = (), source: str = "") -> RetrievedContextChunk:
+        """The whole file if small, else the window of _MAX_FILE_CHARS with the most query-term hits."""
+        lines = content.split("\n")
+        start, end = 0, len(lines)
         if len(content) > _MAX_FILE_CHARS:
-            content = content[:_MAX_FILE_CHARS] + "\n...(truncated)..."
-        return RetrievedContextChunk(
-            file_path=path, start_line=1, end_line=len(content.split("\n")), content=content, score=score, source=source
-        )
+            start, end = _best_window(lines, terms)
+            content = "\n".join(lines[start:end])
+            if start > 0:
+                content = f"...(lines 1-{start} omitted)...\n" + content
+            if end < len(lines):
+                content += "\n...(truncated)..."
+        return RetrievedContextChunk(file_path=path, start_line=start + 1, end_line=end, content=content, score=score,
+                                     source=source)
 
     @staticmethod
     def _file_chunks(path: str, content: str, score: float, terms: List[str], symbol_index,
                      source: str) -> List[RetrievedContextChunk]:
         """A small file whole; a large indexed file as its most relevant symbols with real line ranges."""
         if len(content) <= _MAX_FILE_CHARS or symbol_index is None or not symbol_index.symbols_in_file(path):
-            return [ContextBuilder._chunk(path, content, score, source)]
+            return [ContextBuilder._chunk(path, content, score, terms, source)]
         lines = content.split("\n")
         ranked = []
         for sym in symbol_index.symbols_in_file(path):
@@ -298,7 +337,7 @@ class ContextBuilder:
             if s:
                 ranked.append((s, sym, text))
         if not ranked:
-            return [ContextBuilder._chunk(path, content, score, source)]
+            return [ContextBuilder._chunk(path, content, score, terms, source)]
         ranked.sort(key=lambda r: (-r[0], r[1].start_line))
         best = ranked[0][0]
         chunks = []
@@ -315,7 +354,7 @@ class ContextBuilder:
     def _locate(workspace_path: str | None, path: str, content: str, score: float) -> RetrievedContextChunk | None:
         """Give an indexed chunk its real line range; drop it if the checkout no longer contains it."""
         if not workspace_path:
-            return ContextBuilder._chunk(path, content, score, "semantic")
+            return ContextBuilder._chunk(path, content, score, source="semantic")
         text = read_repo_file(workspace_path, path)
         pos = text.find(content) if text else -1
         if pos < 0:

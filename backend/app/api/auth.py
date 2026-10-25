@@ -1,6 +1,8 @@
 import secrets
+import time
 import httpx
 from datetime import datetime, timedelta
+from urllib.parse import urlencode
 from fastapi import APIRouter, Depends, HTTPException, Response, Request
 from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session as DBSession
@@ -11,27 +13,37 @@ from app.config import settings
 
 router = APIRouter()
 
-# Simple state store for validation (in production, use Redis or signed cookies)
-oauth_states = {}
+# OAuth `state` values issued by this process -> issue time. Single process only;
+# entries expire so abandoned logins do not accumulate.
+oauth_states: dict[str, float] = {}
+OAUTH_STATE_TTL_SECONDS = 600
+
+
+def _prune_states(now: float) -> None:
+    for key in [k for k, issued in oauth_states.items() if now - issued > OAUTH_STATE_TTL_SECONDS]:
+        oauth_states.pop(key, None)
 
 @router.get("/github/login")
 async def github_login():
     if not settings.GITHUB_OAUTH_CLIENT_ID:
         raise HTTPException(status_code=500, detail="GitHub OAuth not configured")
         
+    now = time.time()
+    _prune_states(now)
     state = secrets.token_urlsafe(32)
-    oauth_states[state] = True # Store securely
-    
-    url = f"https://github.com/login/oauth/authorize?client_id={settings.GITHUB_OAUTH_CLIENT_ID}&state={state}&redirect_uri={settings.GITHUB_OAUTH_REDIRECT_URI}"
+    oauth_states[state] = now
+
+    query = urlencode({"client_id": settings.GITHUB_OAUTH_CLIENT_ID, "state": state,
+                       "redirect_uri": settings.GITHUB_OAUTH_REDIRECT_URI})
+    url = f"https://github.com/login/oauth/authorize?{query}"
     
     return RedirectResponse(url=url, status_code=302)
 
 @router.get("/github/callback")
 async def github_callback(code: str, state: str, response: Response, db: DBSession = Depends(get_db)):
-    if not state or state not in oauth_states:
+    issued = oauth_states.pop(state, None) if state else None  # single use
+    if issued is None or time.time() - issued > OAUTH_STATE_TTL_SECONDS:
         raise HTTPException(status_code=400, detail="Invalid OAuth state")
-        
-    del oauth_states[state] # Single use enforcing inherently!
     
     # Exchange code
     async with httpx.AsyncClient() as client:
@@ -96,14 +108,14 @@ async def github_callback(code: str, state: str, response: Response, db: DBSessi
     # We must return a redirect to frontend since this is the callback URL!
     redir = RedirectResponse(url=settings.FRONTEND_URL.rstrip("/") + "/", status_code=302)
     
-    # Secure HTTPOnly Cookie (SameSite=Lax for OAuth)
-    # Using secure=False primarily for local testing; would be True for https production!
+    # HttpOnly, SameSite=Lax (needed for the OAuth redirect); Secure whenever the
+    # API itself is served over HTTPS.
     redir.set_cookie(
         key="session_id",
         value=session_id,
         httponly=True,
         samesite="lax",
-        secure=False,
+        secure=settings.GITHUB_OAUTH_REDIRECT_URI.lower().startswith("https://"),
         max_age=settings.SESSION_EXPIRE_HOURS * 3600
     )
     

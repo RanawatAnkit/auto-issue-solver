@@ -100,19 +100,6 @@ export interface UserProfile {
     github_avatar_url: string | null;
 }
 
-export interface BenchmarkReferenceSolution {
-    file_path?: string;
-    target_function?: string;
-    summary?: string;
-}
-
-export interface BenchmarkTestSuite {
-    test_file?: string;
-    test_name?: string;
-    fail_to_pass?: string[];
-    pass_to_pass?: string[];
-}
-
 export interface IssueAnalysisData {
     problem_summary?: string;
     expected_behavior?: string;
@@ -123,56 +110,107 @@ export interface IssueAnalysisData {
     [key: string]: unknown;
 }
 
-export interface BenchmarkTask {
-    instance_id: string;
-    repo: string;
-    base_commit: string;
-    problem_statement: string;
-    hints_text?: string;
-    test_patch?: string;
-    pass_to_pass?: string[];
-    fail_to_pass?: string[];
-    files_to_modify: string[];
-    difficulty?: string;
-    category?: string;
-    reference_solution?: BenchmarkReferenceSolution;
-    test_suite?: BenchmarkTestSuite;
-    latest_status?: 'RESOLVED' | 'FAILED' | 'PENDING' | string;
-    latest_runtime?: number | null;
-    latest_provider?: string | null;
-    latest_patch?: string | null;
-    latest_analysis?: IssueAnalysisData | null;
+// Outcomes reported by the SWE-bench harness (backend/app/eval/harness.py).
+// RESOLVED / UNRESOLVED / NO_PATCH / PATCH_APPLY_FAILED are agent attempts;
+// LLM_ERROR / ENV_ERROR / HARNESS_ERROR are infrastructure failures.
+export type EvaluationOutcome =
+    | 'RESOLVED'
+    | 'UNRESOLVED'
+    | 'NO_PATCH'
+    | 'PATCH_APPLY_FAILED'
+    | 'LLM_ERROR'
+    | 'ENV_ERROR'
+    | 'HARNESS_ERROR';
+
+export interface EvaluationTestReport {
+    f2p_passed: number;
+    f2p_total: number;
+    p2p_passed: number;
+    p2p_total: number;
+    f2p_failed: string[];
+    p2p_failed: string[];
 }
 
-export interface EvaluationStats {
-    total_benchmark_tasks: number;
-    total_evaluated: number;
-    resolved_count: number;
-    failed_count: number;
-    pass_rate_percentage: number;
-    average_resolution_time_seconds: number;
-    active_provider: string;
-    active_model: string;
-    benchmark_dataset: string;
-}
-
-export interface EvaluationRunResult {
+export interface EvaluationResult {
     run_id: string;
     instance_id: string;
     repo: string;
-    provider: string;
-    model: string;
-    status: 'RESOLVED' | 'FAILED' | string;
+    mode: 'agent' | 'gold';
+    outcome: EvaluationOutcome;
+    resolved: boolean;
+    detail: string;
+    provider: string | null;
+    model: string | null;
     runtime_seconds: number;
+    started_at: string;
     completed_at: string;
-    patch_diff: string;
-    tests_summary?: string;
-    error?: string;
+    patch: string;
+    tests: EvaluationTestReport | null;
+    analysis: IssueAnalysisData | null;
+    plan: Record<string, unknown> | null;
+    test_log_tail: string;
+    stage_seconds: Record<string, number>;
+    artifacts?: string;
 }
 
-export interface EvaluationBatchResponse {
-    status: string;
-    total_evaluated: number;
-    resolved_count: number;
-    results: EvaluationRunResult[];
+export interface BenchmarkTask {
+    instance_id: string;
+    repo: string;
+    version: string;
+    base_commit: string;
+    created_at: string;
+    problem_statement: string;
+    hints_text?: string;
+    patch: string;
+    test_patch: string;
+    FAIL_TO_PASS: string[];
+    PASS_TO_PASS: string[];
+    latest_result: EvaluationResult | null;
+    environment_check: EvaluationResult | null;
+}
+
+export interface EvaluationStats {
+    total_tasks: number;
+    evaluated: number;
+    attempted: number;
+    resolved: number;
+    resolution_rate_attempted: number | null;
+    resolution_rate_total: number | null;
+    outcomes: Partial<Record<EvaluationOutcome, number>>;
+    average_runtime_seconds: number | null;
+    environment_validated: number;
+    environment_checked: number;
+    environment_invalid: string[];
+    last_provider: string | null;
+    last_model: string | null;
+    dataset: string;
+    by_model: EvaluationModelStats[];
+}
+
+// Latest result of each model on each task it ran; the headline numbers only keep
+// the latest result of any model per task.
+export interface EvaluationModelStats {
+    model: string;
+    provider: string | null;
+    evaluated: number;
+    attempted: number;
+    resolved: number;
+    resolved_ids: string[];
+    outcomes: Partial<Record<EvaluationOutcome, number>>;
+}
+
+export interface EvaluationJobStatus {
+    running: boolean;
+    run_id?: string;
+    mode?: 'agent' | 'gold';
+    total?: number;
+    done?: number;
+    current?: string | null;
+    started_at?: string;
+    finished_at?: string | null;
+    stopped_reason?: string | null;
+    error?: string | null;
+    outcomes?: Partial<Record<EvaluationOutcome, number>>;
+    // Tasks left out because they need network and the run did not allow it.
+    skipped?: string[];
 }

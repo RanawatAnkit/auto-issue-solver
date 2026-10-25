@@ -373,3 +373,33 @@ def test_dependency_length_is_bounded_inside_the_pattern():
     assert item["pattern"].endswith("{0,59}$")
     with pytest.raises(ValidationError):
         MODEL.model_validate(dict(copy.deepcopy(COMPLETE), dependencies=["a" * 61]))
+
+
+# ---- merge with origin/main: PLAN_MAX_FILES (default 4) vs grounded plans that must include tests ----
+
+def test_grounded_size_limit_counts_source_files_only(index, monkeypatch):
+    monkeypatch.setattr("app.config.settings.PLAN_MAX_FILES", 4)
+    _, llm, plan = _run_planner(index, [draft()])  # 4 source files + 1 test file
+    assert len(plan.affected_files) == 5 and llm.generate_structured.call_count == 1
+    assert "tests/test_tasks.py" in [f.path for f in plan.affected_files]
+
+
+def test_grounded_trim_never_drops_test_files(index, monkeypatch):
+    from app.agents.schemas import SolutionPlan, FileChangePlan
+    monkeypatch.setattr("app.config.settings.PLAN_MAX_FILES", 2)
+    plan = SolutionPlan(summary="s", acceptance_criteria=["a"], affected_files=[
+        FileChangePlan(path=p, operation="modify", reason="r") for p in
+        ("app/models.py", "app/schemas.py", "app/services.py", "tests/test_tasks.py")])
+    PlannerAgent._trim_to_limits(plan, keep_tests=True)
+    assert [f.path for f in plan.affected_files] == ["app/models.py", "app/schemas.py", "tests/test_tasks.py"]
+
+
+def test_ungrounded_size_limit_is_unchanged(monkeypatch):
+    from app.agents.planner import PlanTooLarge
+    from app.agents.schemas import SolutionPlan, FileChangePlan
+    monkeypatch.setattr("app.config.settings.PLAN_MAX_FILES", 4)
+    paths = ["app/models.py", "app/schemas.py", "app/services.py", "app/routes.py", "tests/test_tasks.py"]
+    plan = SolutionPlan(summary="s", acceptance_criteria=["a"],
+                        affected_files=[FileChangePlan(path=p, operation="modify", reason="r") for p in paths])
+    with patch("app.agents.planner.LLMService"), pytest.raises(PlanTooLarge, match="Plan touches 5 files"):
+        PlannerAgent().validate_plan(plan, paths)

@@ -43,3 +43,13 @@ frontend/*_out.txt
 *.p12
 *.pfx
 *private-key*
+
+# Local tools
+ngrok.exe
+ngrok
+
+# SWE-bench harness output and repository cache (see RUNGUIDE.md)
+backend/eval_results/
+backend/.eval_cache/
+
+RUNGUIDE.md

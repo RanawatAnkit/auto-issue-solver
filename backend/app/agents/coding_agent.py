@@ -1,4 +1,5 @@
 import os
+import re
 import json
 import logging
 from typing import Iterable, List
@@ -6,7 +7,7 @@ from app.config import settings
 from app.services.llm_service import LLMService
 from app.services.patch_service import PatchService, PatchError, ScopeViolationError
 from app.agents.schemas import CodeChangePlan, single_file_change_plan
-from app.agents.prompting import files_block, related_test_support_files
+from app.agents.prompting import excerpt_block, files_block, related_test_support_files
 from app.agents.planner import normalize_repo_path, is_test_file
 
 logger = logging.getLogger(__name__)
@@ -57,7 +58,9 @@ class CodingAgent:
         )
         if feedback:
             user += f"\n\nYOUR PREVIOUS ANSWER WAS REJECTED:\n{feedback}\nReturn a corrected set of changes."
-        result = self.llm.generate_structured(SYSTEM_PROMPT, user, response_model)
+        # After a rejection, ask for variation: at temperature 0 a local model tends to
+        # return the identical rejected answer (seen as DUPLICATE_PATCH, NO_PATCH).
+        result = self.llm.generate_structured(SYSTEM_PROMPT, user, response_model, vary=bool(feedback))
         # Per-step schemas are dynamic subclasses; hand the rest of the pipeline the plain contract.
         return result if type(result) is CodeChangePlan else CodeChangePlan.model_validate(result.model_dump())
 
@@ -74,6 +77,18 @@ class CodingAgent:
                     parts.append("Planned changes:\n" + "\n".join(f"- {c}" for c in entry["planned_changes"]))
                 return "\n".join(parts) + "\n"
         return ""
+
+    @staticmethod
+    def _step_symbols(plan, target: str) -> list[str]:
+        """Symbols the plan names for this file, plus `identifiers` quoted in its planned changes."""
+        entries = (plan or {}).get("affected_files", []) if isinstance(plan, dict) else []
+        names: list[str] = []
+        for entry in entries:
+            if isinstance(entry, dict) and normalize_repo_path(entry.get("path", "")) == target:
+                names.extend(entry.get("symbols") or [])
+                for text in entry.get("planned_changes") or []:
+                    names.extend(re.findall(r"`([A-Za-z_][\w.]*)", text))
+        return [n.rstrip("().") for n in dict.fromkeys(names) if n]
 
     @staticmethod
     def _describe_rejection(attempt: int, error: PatchError, changes: CodeChangePlan | None) -> str:
@@ -116,16 +131,27 @@ class CodingAgent:
         summaries, changed, all_changes = [], [], []
         try:
             for target in allowed:
-                context, included = files_block(
-                    workspace_path, [target] + [p for p in allowed if p != target] + support + extra,
-                    int(self.llm.prompt_budget_chars() * 0.6))
-                if target in tracked_set and target not in included:
-                    raise PatchError(f"{target} is too large to show the model within the prompt budget; cannot edit it safely.")
+                budget = int(self.llm.prompt_budget_chars() * 0.6)
+                target_block, _ = files_block(workspace_path, [target], budget)
+                excerpted = False
+                if not target_block and os.path.isfile(os.path.join(workspace_path, target)):
+                    # Too large to show whole: show the parts the plan is about.
+                    target_block = excerpt_block(workspace_path, target, self._step_symbols(plan, target), budget // 2)
+                    if not target_block:
+                        raise PatchError(f"{target} is too large to show the model and the plan names no "
+                                         "symbol in it to focus on; cannot edit it safely.")
+                    excerpted = True
+                others, _ = files_block(workspace_path, [p for p in allowed if p != target] + support + extra,
+                                        budget - len(target_block))
+                context = target_block + ("\n" + others if others else "")
                 done = [p for p in changed]
                 creating = target not in tracked_set and target not in changed
                 note = (
                     f"Change ONLY this file now: {target}"
                     + (" (it does not exist yet: use operation 'create')" if creating else "")
+                    + (" (the file is large: only the relevant parts are shown; prefer 'symbol' edits and "
+                       "quote 'search' text only from the lines shown, never the '... not shown ...' markers)"
+                       if excerpted else "")
                     + f"\n{self._step_instructions(plan, target)}"
                     + f"All files in the plan (each gets its own step): {', '.join(allowed)}"
                     + (f"\nAlready updated in this change (current content shown below): {', '.join(done)}" if done else "")
