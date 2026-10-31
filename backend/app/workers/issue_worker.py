@@ -11,17 +11,9 @@ from app.models.domain import AgentRun, AgentStateEnum, Repository, Issue, Agent
 from app.config import settings
 from app.services.llm_service import verify_ollama_available, track_llm_usage, summarize_llm_usage
 from app.services.repository_scanner import RepositoryScanner, list_tracked_files
-from app.services.symbol_index import SymbolIndex
-from app.agents.issue_analyzer import IssueAnalyzer
-from app.agents.context_builder import ContextBuilder
-from app.agents.localizer import Localizer
-from app.agents.requirements import extract_requirements
-from app.agents.planner import PlannerAgent
-from app.agents.schemas import LocalizationResult
-from app.agents.coding_agent import CodingAgent
-from app.services.patch_service import PatchError
-from app.sandbox.test_runner import TestRunner, ENVIRONMENT_OUTCOMES
-from app.workflows.repair_graph import execute_repair_loop
+from app.agents.pipeline import (solve_issue, test_evidence, PLAN_ONLY, WORKSPACE_MODIFIED, ENVIRONMENT_FAILURE,
+                                 NO_VALID_PATCH, REPAIR_EXHAUSTED)
+from app.sandbox.test_runner import TestRunner
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -76,14 +68,6 @@ class _Run:
             self.run.total_runtime = (self.run.completed_at - self.run.started_at).total_seconds()
         self.db.commit()
         logger.info(f"Run {self.run.id} finished: {status.value} - {step}")
-
-
-def _test_evidence(result: dict | None) -> str:
-    if not result:
-        return "not run"
-    counts = result.get("summary") or {}
-    counts_str = ", ".join(f"{v} {k}" for k, v in counts.items()) or "no counts reported"
-    return f"{result.get('outcome', 'UNKNOWN')} (exit code {result.get('exit_code')}; {counts_str})"
 
 
 def process_agent_run(payload: dict):
@@ -160,165 +144,63 @@ def _process_agent_run(payload: dict, usage: list):
             logger.warning(f"Repository indexing failed; continuing with lexical retrieval: {idx_err}")
             tracker.action("index_repository", None, f"Indexing failed: {idx_err}", success=False)
 
-        # Step 2: Issue analysis
-        tracker.status(AgentStateEnum.ANALYZING_ISSUE, "Analyzing issue with LLM")
-        analysis = IssueAnalyzer().analyze(issue.title, issue.body, issue.labels, repo.full_name, tracked_files)
-        run.issue_analysis = analysis.model_dump()
-        tracker.action("issue_analysis", issue.title, run.issue_analysis)
+        # Steps 2-6: analysis, planning, baseline tests, code generation, sandbox tests and bounded repair
+        runners = []
 
-        # Step 3: Context retrieval, localization and planning
-        tracker.status(AgentStateEnum.RETRIEVING_CONTEXT, "Retrieving relevant code")
-        symbol_index = None
-        try:
-            symbol_index = SymbolIndex.build(workspace.workspace_path, tracked_files)
-            tracker.action("symbol_index", None, {"symbols": len(symbol_index.symbols),
-                                                  "python_files": len(symbol_index.python_files),
-                                                  "not_parsed": sorted(symbol_index.parse_errors)[:50]})
-        except Exception as sym_err:
-            logger.warning(f"Symbol index unavailable; continuing without localization: {sym_err}")
-            tracker.action("symbol_index", None, f"Symbol index failed: {sym_err}", success=False)
+        def tests_for(_changed):
+            # One sandbox runner for the whole run, created only when code mutation needs it.
+            if not runners:
+                runners.append(TestRunner(workspace.workspace_path))
+            return runners[0]
 
-        builder = ContextBuilder(db)
-        context = builder.build_context(repo.id, analysis, workspace.workspace_path, tracked_files,
-                                        symbol_index=symbol_index, issue_text=f"{issue.title}\n{issue.body or ''}")
-        tracker.action("retrieve_context", None, [c.file_path for c in context])
-
-        localization = None
-        if symbol_index is not None and _flag("LOCALIZATION_ENABLED", True):
-            tracker.status(AgentStateEnum.RETRIEVING_CONTEXT, "Localizing the probable root cause")
-            try:
-                localization = Localizer(symbol_index).localize(
-                    issue.title, issue.body, analysis, getattr(builder, "seed_locations", None), context,
-                    on_round=lambda n, info: tracker.action(f"localization_round_{n}", None, info,
-                                                            success=not info.get("rejected")),
-                )
-            except Exception as loc_err:
-                logger.warning(f"Localization crashed; planning from retrieved context: {loc_err}")
-                localization = LocalizationResult(status="fallback", reason=f"localizer error: {type(loc_err).__name__}: {loc_err}")
-            if isinstance(localization, LocalizationResult):
-                tracker.action("localization", localization.status,
-                               localization.model_dump(exclude={"locations": {"__all__": {"snippet"}}}),
-                               # "seeded" means the model's localization failed: not a success.
-                               success=localization.status == "localized")
+        def on_output(name, value):
+            # Kept on the run as soon as each stage finishes, so a later failure still shows them.
+            if name == "patch":
+                run.modified_files, run.diff_summary = value["changed_files"], value["summary"]
             else:
-                localization = None
-        locations = localization.locations if localization and localization.status in ("localized", "seeded") else []
-        locations_confirmed = bool(localization and localization.status == "localized")
+                setattr(run, {"analysis": "issue_analysis", "plan": "solution_plan",
+                              "baseline": "baseline_test_result", "test_result": "test_result"}[name], value)
 
-        tracker.status(AgentStateEnum.PLANNING, "Generating solution plan")
-        # Explicit requirements from the issue text itself, so the plan cannot silently drop one.
-        requirements = extract_requirements(issue.body or "")
-        if requirements:
-            tracker.action("issue_requirements", None, requirements)
-        planner = PlannerAgent()
-        try:
-            plan = planner.create_plan(analysis, context, repo.full_name, tracked_files,
-                                       locations=locations, symbol_index=symbol_index,
-                                       locations_confirmed=locations_confirmed, requirements=requirements)
-        finally:
-            rejected_attempts = getattr(planner, "attempt_errors", None)
-            if isinstance(rejected_attempts, list) and rejected_attempts:
-                tracker.action("plan_rejected_attempts", None, rejected_attempts, success=False)
-        run.solution_plan = plan.model_dump()
-        if localization is not None:
-            run.solution_plan["localization"] = localization.model_dump(
-                exclude={"locations": {"__all__": {"snippet"}}, "searches": True})
-        tracker.action("solution_plan", None, run.solution_plan)
+        solved = solve_issue(
+            issue.title, issue.body, issue.labels, repo.full_name, workspace.workspace_path, tracked_files,
+            tests_for, db=db, repo_id=repo.id, mutate=_flag("ENABLE_CODE_MUTATION"),
+            changed_files=workspace.changed_files, run_id=run.id,
+            issue_context=f"Issue #{issue.number}: {issue.title}\n{issue.body or ''}",
+            record=tracker.action, on_stage=lambda state, step: tracker.status(AgentStateEnum[state], step),
+            on_output=on_output)
+        if solved.repair is not None:
+            run.repair_attempt = solved.repair.get("attempts", 0)
+            run.repair_history = solved.repair.get("repair_history")
+            run.termination_reason = solved.repair.get("termination_reason")
+            run.failure_analysis = solved.repair.get("failure_analysis")
+            run.repair_plan = solved.repair.get("repair_plan")
+            run.test_result = solved.test_result
+            run.modified_files = solved.modified_files
+            db.commit()
 
-        # Planning is read-only: refuse to go further if anything touched the checkout.
-        modified = list(workspace.changed_files() or [])
-        if modified:
-            tracker.finish(AgentStateEnum.FAILED, "Workspace modified during planning",
-                           error=f"Planning must not modify the repository, but these files changed: {modified[:20]}",
-                           termination_reason="WORKSPACE_MODIFIED_DURING_PLANNING")
-            return
-        tracker.action("workspace_check", base_commit_sha, "Checkout unchanged after planning")
-
-        if not _flag("ENABLE_CODE_MUTATION"):
+        if solved.status == PLAN_ONLY:
             tracker.finish(AgentStateEnum.PLAN_READY, "Solution plan generated successfully")
             logger.info("Code mutation disabled (ENABLE_CODE_MUTATION=False). Worker completed milestone at PLAN_READY.")
             return
-        tracker.status(AgentStateEnum.PLAN_READY, "Solution plan generated successfully")
-
-        # Step 4: Baseline tests on the untouched checkout
-        runner = TestRunner(workspace.workspace_path)
-        tracker.status(AgentStateEnum.TESTING, "Running existing tests on the unmodified repository (baseline)")
-        baseline = runner.run_tests()
-        run.baseline_test_result = baseline
-        tracker.action("baseline_tests", baseline.get("command"), _test_evidence(baseline), success=bool(baseline.get("success")))
-        if baseline.get("outcome") in ENVIRONMENT_OUTCOMES:
-            tracker.finish(
-                AgentStateEnum.FAILED,
-                "Sandbox cannot run this repository's tests",
-                error=f"Tests could not run on the unmodified repository ({baseline.get('outcome')}): "
-                      f"{(baseline.get('stderr') or '')[-1500:]}",
-                termination_reason="ENVIRONMENT_FAILURE",
-            )
+        if solved.status == WORKSPACE_MODIFIED:
+            tracker.finish(AgentStateEnum.FAILED, "Workspace modified during planning",
+                           error=str(solved.error), termination_reason="WORKSPACE_MODIFIED_DURING_PLANNING")
             return
-
-        # Step 5: Grounded code generation
-        tracker.status(AgentStateEnum.CODING, "Generating code changes from solution plan")
-        try:
-            metrics = CodingAgent().implement(
-                workspace.workspace_path,
-                analysis=run.issue_analysis,
-                plan=run.solution_plan,
-                target_files=[f.path for f in plan.affected_files if f.operation != "delete"],
-                tracked_files=tracked_files,
-                extra_context_files=[c.file_path for c in context],
-            )
-        except PatchError as patch_err:
-            # The coding agent has already restored every file it touched.
-            tracker.action("apply_patch", None, str(patch_err), success=False)
+        if solved.status == ENVIRONMENT_FAILURE:
+            tracker.finish(AgentStateEnum.FAILED, "Sandbox cannot run this repository's tests",
+                           error=str(solved.error), termination_reason="ENVIRONMENT_FAILURE")
+            return
+        if solved.status == NO_VALID_PATCH:
             tracker.finish(AgentStateEnum.FAILED, "No valid code change could be produced",
-                           error=str(patch_err), termination_reason="NO_VALID_PATCH")
+                           error=str(solved.error), termination_reason="NO_VALID_PATCH")
             return
-        run.modified_files = metrics.get("changed_files", [])
-        run.diff_summary = metrics.get("summary", "")
-        tracker.action("apply_patch", None, {"changed_files": run.modified_files})
-        tracker.status(AgentStateEnum.PATCH_APPLIED, f"Patch applied to {len(run.modified_files)} file(s)")
-
-        # Step 6: Sandbox tests and bounded repair
-        tracker.status(AgentStateEnum.TESTING, "Executing tests in isolated sandbox")
-        test_res = runner.run_tests()
-        run.test_result = test_res
-        tracker.action("run_tests", test_res.get("command"), _test_evidence(test_res), success=bool(test_res.get("success")))
-
-        if not test_res.get("success", False):
-            tracker.status(AgentStateEnum.TEST_FAILED, f"Tests failed after the change: {_test_evidence(test_res)}")
-            repair_result = execute_repair_loop(
-                run_id=run.id,
-                initial_context={
-                    "issue_context": f"Issue #{issue.number}: {issue.title}\n{issue.body or ''}",
-                    "solution_plan": run.solution_plan,
-                    "test_result": test_res,
-                    "baseline_test_result": baseline,
-                    "modified_files": list(run.modified_files or []),
-                    "tracked_files": tracked_files,
-                },
-                workspace_path=workspace.workspace_path,
-                on_progress=lambda status, step: tracker.status(AgentStateEnum[status], step),
+        if solved.status == REPAIR_EXHAUSTED:
+            tracker.finish(
+                AgentStateEnum.REPAIR_EXHAUSTED,
+                f"Repair stopped ({run.termination_reason}); last test result: {test_evidence(run.test_result)}",
+                termination_reason=run.termination_reason,
             )
-            run.repair_attempt = repair_result.get("attempts", 0)
-            run.repair_history = repair_result.get("repair_history")
-            run.termination_reason = repair_result.get("termination_reason")
-            run.failure_analysis = repair_result.get("failure_analysis")
-            run.repair_plan = repair_result.get("repair_plan")
-            run.test_result = repair_result.get("test_result") or run.test_result
-            run.modified_files = sorted(set(run.modified_files or []) | set(repair_result.get("modified_files") or []))
-            db.commit()
-            tracker.action("repair_loop", None, {k: repair_result.get(k) for k in ("status", "attempts", "termination_reason")},
-                           success=repair_result.get("status") == "REPAIR_SUCCESS")
-
-            if repair_result.get("status") != "REPAIR_SUCCESS":
-                tracker.finish(
-                    AgentStateEnum.REPAIR_EXHAUSTED,
-                    f"Repair stopped ({run.termination_reason}); last test result: {_test_evidence(run.test_result)}",
-                    termination_reason=run.termination_reason,
-                )
-                return
-
-        tracker.status(AgentStateEnum.REPAIR_SUCCESS, f"Tests passed: {_test_evidence(run.test_result)}")
+            return
 
         # Step 7: Review & security checks on what actually changed on disk
         tracker.status(AgentStateEnum.VALIDATING, "Validating git diff and scanning for secrets")
@@ -401,8 +283,8 @@ def _process_agent_run(payload: dict, usage: list):
                     f"### Approach\n{plan_summary}\n\n"
                     f"### Files changed\n" + "".join(f"- `{p}`\n" for p in stage_targets) + "\n"
                     f"### Test evidence (sandbox)\n"
-                    f"- Baseline (before change): {_test_evidence(run.baseline_test_result)}\n"
-                    f"- After change: {_test_evidence(run.test_result)}\n"
+                    f"- Baseline (before change): {test_evidence(run.baseline_test_result)}\n"
+                    f"- After change: {test_evidence(run.test_result)}\n"
                     f"- Command: `{' '.join((run.test_result or {}).get('command') or [])}`\n"
                     f"- Repair attempts: {run.repair_attempt or 0}\n\n"
                     f"### Commits\n- Base: `{base_commit_sha[:7]}`\n- Head: `{commit_sha[:7]}`\n\n"

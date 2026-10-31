@@ -188,9 +188,16 @@ class FeedbackRunner:
                 "command": command, "duration_seconds": run.duration_seconds}
 
 
+def _changed_paths(workspace: str) -> list[str]:
+    """Paths that differ from HEAD in a checkout, new untracked files included."""
+    return [line[3:] for line in git(workspace, "status", "--porcelain", "--untracked-files=all").splitlines()
+            if len(line) > 3]
+
+
 def run_agent(workspace: str, task: dict, trace: dict,
               run_tests: Callable[[str, list[str]], "TestRun"] | None = None) -> None:
-    """Run the production agent stages on a checkout; edits land in `workspace`.
+    """Solve the task with app.agents.pipeline.solve_issue, the function the worker uses; edits land in
+    `workspace`.
 
     Each stage's output is put in `trace` as soon as it exists, so a run that fails
     later (e.g. in code generation) still records the analysis and plan it worked from.
@@ -199,59 +206,51 @@ def run_agent(workspace: str, task: dict, trace: dict,
     its change in the task's environment, and failures go through the same bounded
     repair loop the worker uses. The benchmark's hidden tests are never used here.
     """
-    from app.agents.issue_analyzer import IssueAnalyzer
-    from app.agents.context_builder import ContextBuilder
-    from app.agents.planner import PlannerAgent, is_test_file
-    from app.agents.coding_agent import CodingAgent
+    from app.agents.pipeline import solve_issue, NO_VALID_PATCH, NOT_TESTED, TESTS_PASSED, REPAIR_EXHAUSTED
+    from app.agents.planner import is_test_file
     from app.services.repository_scanner import list_tracked_files
-    from app.workflows.repair_graph import execute_repair_loop
 
     statement = task["problem_statement"].strip()
     title = statement.split("\n", 1)[0][:200]
     tracked = list_tracked_files(workspace)
-    analysis = IssueAnalyzer().analyze(title, statement, "", task["repo"], tracked)
-    trace["analysis"] = analysis.model_dump()
-    # No database here: retrieval is lexical over the checkout.
-    context = ContextBuilder(None).build_context(0, analysis, workspace, tracked)
-    trace["context_files"] = [c.file_path for c in context]
-    plan = PlannerAgent().create_plan(analysis, context, task["repo"], tracked)
-    trace["plan"] = plan.model_dump()
-    targets = [f.path for f in plan.affected_files if f.operation != "delete"]
-    # Documentation is not graded; editing it only costs LLM calls and time.
-    code_targets = [p for p in targets if not _is_doc_file(p)]
-    trace["skipped_doc_files"] = [p for p in targets if p not in code_targets]
-    metrics = CodingAgent().implement(
-        workspace,
-        analysis=analysis.model_dump(),
-        plan=plan.model_dump(),
-        target_files=code_targets or targets,
-        tracked_files=tracked,
-        extra_context_files=[c.file_path for c in context],
-    )
-    changed = metrics.get("changed_files", [])
-    own_tests = [p for p in changed if p.endswith(".py") and is_test_file(p)]
-    if run_tests is None or not own_tests:
+
+    def record(action_type, _input=None, output=None, success=True):
+        output = json.loads(json.dumps(output, default=str))  # the result store writes plain JSON
+        trace.setdefault("stages", {})[action_type] = {"output": output, "success": success}
+        if action_type == "retrieve_context":
+            trace["context_files"] = output
+
+    def on_output(name, value):
+        if name in ("analysis", "plan"):
+            trace[name] = value
+        elif name == "test_result":
+            trace["feedback"].update(outcome=value["outcome"], summary=value["summary"])
+
+    def tests_for(changed):
+        # Only the tests the agent itself wrote or changed; none exist before its change, so no baseline.
+        own_tests = [p for p in changed if p.endswith(".py") and is_test_file(p)]
+        if run_tests is None or not own_tests:
+            return None
+        trace["feedback"] = {"ran": True, "test_files": own_tests}
+        return FeedbackRunner(run_tests, workspace, own_tests)
+
+    # No database here: retrieval is lexical over the checkout. Documentation is not graded; editing it
+    # only costs LLM calls and time.
+    solved = solve_issue(title, statement, "", task["repo"], workspace, tracked, tests_for,
+                         changed_files=lambda: _changed_paths(workspace), skip_target=_is_doc_file,
+                         max_repair_attempts=getattr(settings, "EVAL_REPAIR_ATTEMPTS", 2),
+                         issue_context=statement, record=record, on_output=on_output)
+    trace["skipped_doc_files"] = solved.skipped_targets
+    if solved.status == NO_VALID_PATCH:
+        raise solved.error
+    if solved.status not in (NOT_TESTED, TESTS_PASSED, REPAIR_EXHAUSTED):
+        raise RuntimeError(f"Agent pipeline stopped ({solved.status}): {solved.error}")
+    if solved.status == NOT_TESTED:
         trace["feedback"] = {"ran": False,
                              "reason": "the agent wrote no tests" if run_tests else "no test environment available"}
-        return
-
-    runner = FeedbackRunner(run_tests, workspace, own_tests)
-    first = runner.run_tests()
-    trace["feedback"] = {"ran": True, "test_files": own_tests, "outcome": first["outcome"],
-                         "summary": first["summary"]}
-    if first["success"]:
-        return
-    repair = execute_repair_loop(
-        run_id=0,
-        initial_context={
-            "issue_context": statement, "solution_plan": trace["plan"], "test_result": first,
-            "baseline_test_result": None, "modified_files": list(changed), "tracked_files": tracked,
-        },
-        workspace_path=workspace, runner=runner,
-        max_attempts=getattr(settings, "EVAL_REPAIR_ATTEMPTS", 2),
-    )
-    trace["repair"] = {k: repair.get(k) for k in ("status", "attempts", "termination_reason")}
-    trace["repair"]["final_outcome"] = (repair.get("test_result") or {}).get("outcome")
+    if solved.repair is not None:
+        trace["repair"] = {k: solved.repair.get(k) for k in ("status", "attempts", "termination_reason")}
+        trace["repair"]["final_outcome"] = (solved.repair.get("test_result") or {}).get("outcome")
 
 
 class Harness:

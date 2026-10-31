@@ -60,15 +60,15 @@ def env(origin_repo, monkeypatch):
     monkeypatch.setattr("app.config.settings.ENABLE_PR_CREATION", True)
     patches = {
         "gh": patch("app.workers.issue_worker.GitHubService"),
-        "analyzer": patch("app.workers.issue_worker.IssueAnalyzer"),
-        "context": patch("app.workers.issue_worker.ContextBuilder"),
-        "planner": patch("app.workers.issue_worker.PlannerAgent"),
-        "coder": patch("app.workers.issue_worker.CodingAgent"),
+        "analyzer": patch("app.agents.pipeline.IssueAnalyzer"),
+        "context": patch("app.agents.pipeline.ContextBuilder"),
+        "planner": patch("app.agents.pipeline.PlannerAgent"),
+        "coder": patch("app.agents.pipeline.CodingAgent"),
         "runner": patch("app.workers.issue_worker.TestRunner"),
-        "repair": patch("app.workers.issue_worker.execute_repair_loop"),
+        "repair": patch("app.agents.pipeline.execute_repair_loop"),
         "indexer": patch("app.services.repository_indexer.RepositoryIndexer"),
         # Never reach a real model from the worker tests.
-        "localizer": patch("app.workers.issue_worker.Localizer"),
+        "localizer": patch("app.agents.pipeline.Localizer"),
     }
     mocks = {k: p.start().return_value if k not in ("repair",) else p.start() for k, p in patches.items()}
     ws_patch = patch("app.workers.issue_worker.GitWorkspace", LocalWorkspace)

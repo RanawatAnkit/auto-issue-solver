@@ -344,8 +344,17 @@ def test_run_agent_runs_its_own_tests_and_repairs_on_failure(tmp_path, monkeypat
         FileChangePlan(path="calc.py", operation="modify", reason="bug"),
         FileChangePlan(path="README.md", operation="modify", reason="docs"),
         FileChangePlan(path="tests/test_calc.py", operation="create", reason="test")])
+    from app.agents.schemas import LocalizationResult, CodeLocation
     monkeypatch.setattr("app.agents.issue_analyzer.IssueAnalyzer.analyze", lambda self, *a, **k: analysis)
-    monkeypatch.setattr("app.agents.planner.PlannerAgent.create_plan", lambda self, *a, **k: plan)
+    loc = CodeLocation(file_path="calc.py", symbol="add", kind="function", start_line=1, end_line=2)
+    monkeypatch.setattr("app.agents.localizer.Localizer.localize",
+                        lambda self, *a, **k: LocalizationResult(status="localized", locations=[loc]))
+    planned = {}
+
+    def create_plan(self, *a, **k):
+        planned.update(k)
+        return plan
+    monkeypatch.setattr("app.agents.planner.PlannerAgent.create_plan", create_plan)
     coded = {}
 
     def implement(self, workspace, analysis, plan, target_files, **kw):
@@ -359,7 +368,7 @@ def test_run_agent_runs_its_own_tests_and_repairs_on_failure(tmp_path, monkeypat
         repairs.update(first=initial_context["test_result"]["outcome"], attempts=max_attempts, runner=runner)
         return {"status": "REPAIR_SUCCESS", "attempts": 1, "termination_reason": None,
                 "test_result": {"outcome": "PASSED"}}
-    monkeypatch.setattr("app.workflows.repair_graph.execute_repair_loop", fake_repair)
+    monkeypatch.setattr("app.agents.pipeline.execute_repair_loop", fake_repair)
 
     ran = []
 
@@ -371,6 +380,9 @@ def test_run_agent_runs_its_own_tests_and_repairs_on_failure(tmp_path, monkeypat
     trace = {}
     harness.run_agent(str(ws), {"instance_id": "x", "repo": "pallets/flask", "problem_statement": "add subtracts"},
                       trace, run_tests)
+    # Planned like a real issue: symbol index, confirmed localization and the grounded planner.
+    assert planned["symbol_index"] is not None and planned["locations"] == [loc] and planned["locations_confirmed"]
+    assert trace["stages"]["localization"]["success"] and "context_files" in trace
     assert coded["targets"] == ["calc.py", "tests/test_calc.py"] and trace["skipped_doc_files"] == ["README.md"]
     assert ran == [["tests/test_calc.py"]]
     assert trace["feedback"]["outcome"] == "TESTS_FAILED"
@@ -388,3 +400,28 @@ def test_per_model_stats_keep_each_models_own_results(tmp_path):
     rows = {r["model"]: r for r in by_model([{"instance_id": "a"}], store)}
     assert rows["gemini-x"]["resolved_ids"] == ["a"] and rows["gpt-oss:20b"]["resolved"] == 0
     assert summarize([{"instance_id": "a"}], store)["resolved"] == 0  # headline = latest result of any model
+
+
+def test_run_agent_stops_like_the_worker_when_planning_modifies_the_checkout(tmp_path, monkeypatch):
+    from app.agents.schemas import IssueAnalysis, SolutionPlan, FileChangePlan
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    git(str(ws), "init", "-q")
+    (ws / "calc.py").write_text("def add(a, b):\n    return a - b\n", newline="\n")
+    _commit_all(str(ws), "base")
+    analysis = IssueAnalysis(problem_summary="add subtracts", expected_behavior="sum", current_behavior="difference")
+    monkeypatch.setattr("app.agents.issue_analyzer.IssueAnalyzer.analyze", lambda self, *a, **k: analysis)
+    monkeypatch.setattr("app.agents.localizer.Localizer.localize", lambda self, *a, **k: None)
+
+    def create_plan(self, *a, **k):
+        (ws / "calc.py").write_text("changed while planning\n", newline="\n")
+        return SolutionPlan(summary="fix add", acceptance_criteria=["add(2,2)==4"],
+                            affected_files=[FileChangePlan(path="calc.py", operation="modify", reason="bug")])
+    monkeypatch.setattr("app.agents.planner.PlannerAgent.create_plan", create_plan)
+    coded = []
+    monkeypatch.setattr("app.agents.coding_agent.CodingAgent.implement", lambda self, *a, **k: coded.append(1))
+
+    trace = {}
+    with pytest.raises(RuntimeError, match="WORKSPACE_MODIFIED_DURING_PLANNING"):
+        harness.run_agent(str(ws), {"instance_id": "x", "repo": "pallets/flask", "problem_statement": "add"}, trace)
+    assert coded == [] and trace["plan"]["summary"] == "fix add"
