@@ -354,6 +354,67 @@ def test_code_in_planned_changes_is_rejected(index, text):
         validate(draft(affected_files=files), index)
 
 
+@pytest.mark.parametrize("text", [
+    "Assert the API returns 422 (Unprocessable Entity) for an invalid due date.",
+    "Should return a 422 (validation error) when due_date is not ISO-8601.",
+])
+def test_prose_about_assertions_and_return_values_is_not_code(index, text):
+    files = copy.deepcopy(COMPLETE["affected_files"])
+    files[4]["changes"][0]["change"] = text
+    validate(draft(affected_files=files), index)
+
+
+def test_code_in_a_change_is_rewritten_by_a_small_call_not_a_regeneration(index):
+    # Run 338: one test written as code cost two full regenerations of the ~8k-token prompt.
+    from app.agents.schemas import prose_rewrite_model
+    files = copy.deepcopy(COMPLETE["affected_files"])
+    files[4]["changes"][0]["change"] = "assert response.status_code == 422"
+    prose = prose_rewrite_model(1).model_validate(
+        {"change_1": {"change": "Check that an invalid due date is answered with HTTP 422.", "details": "d",
+                      "preserves": "p"}})
+    planner, llm, plan = _run_planner(index, [draft(affected_files=files), prose])
+
+    assert llm.generate_structured.call_count == 2
+    system, user, model = llm.generate_structured.call_args.args[:3]
+    assert model.__name__ == "ProseRewrite" and "Available Files" not in user
+    assert "test_invalid_due_date_returns_422" in user and "assert response.status_code" in user
+    assert planner.attempt_errors[0].startswith("attempt 1 (initial)")
+    tests_file = next(f for f in plan.affected_files if f.path == "tests/test_tasks.py")
+    assert "answered with HTTP 422" in tests_file.planned_changes[0]
+
+
+def test_context_already_shown_as_a_location_is_not_repeated(index):
+    loc = CodeLocation(file_path="app/services.py", symbol="TaskService.list_tasks", kind="function",
+                       start_line=2, end_line=3, snippet="    def list_tasks(self, status=None, page=1, page_size=20):")
+    ctx = [RetrievedContextChunk(file_path="app/services.py", start_line=2, end_line=3, symbol="TaskService.list_tasks",
+                                 content="DUPLICATE CHUNK", score=1),
+           RetrievedContextChunk(file_path="app/routes.py", start_line=1, end_line=2, content="ROUTES CHUNK", score=1)]
+    with patch("app.agents.planner.LLMService") as llm_cls, patch("app.config.settings.MAX_LLM_RETRIES", 0):
+        llm = llm_cls.return_value
+        llm.prompt_budget_chars.return_value = 60000
+        llm.generate_structured.side_effect = [draft()]
+        PlannerAgent().create_plan(ANALYSIS, ctx, "o/r", list(FILES), locations=[loc], symbol_index=index)
+    user = llm.generate_structured.call_args.args[1]
+    assert "DUPLICATE CHUNK" not in user and "ROUTES CHUNK" in user
+
+
+def test_other_source_files_only_get_a_small_reserve_when_locations_are_confirmed(index):
+    loc = CodeLocation(file_path="app/models.py", symbol="Task", kind="class", start_line=3, end_line=6, snippet="x")
+    big = "x" * 1000
+    ctx = ([RetrievedContextChunk(file_path="app/main.py", start_line=i, end_line=i, content=f"MAIN{i} {big}", score=1)
+            for i in range(1, 6)]
+           + [RetrievedContextChunk(file_path="tests/test_tasks.py", start_line=1, end_line=2, content="TESTS", score=1)])
+    with patch("app.agents.planner.LLMService") as llm_cls, patch("app.config.settings.MAX_LLM_RETRIES", 0):
+        llm = llm_cls.return_value
+        llm.prompt_budget_chars.return_value = 16000  # reserve for other files: 2000 chars
+        llm.generate_structured.side_effect = [draft()]
+        with pytest.raises(ValueError):  # the scripted evidence cites services.py, which is not shown here
+            PlannerAgent().create_plan(ANALYSIS, ctx, "o/r", list(FILES), locations=[loc], symbol_index=index)
+    user = llm.generate_structured.call_args.args[1]
+    # The test file is listed first even though it was retrieved last; main.py gets one chunk.
+    assert user.index("TESTS") < user.index("MAIN1") and "MAIN2" not in user
+
+
 def test_type_annotations_in_prose_are_allowed(index):
     files = copy.deepcopy(COMPLETE["affected_files"])
     files[0]["changes"][1]["details"] = "Optional `datetime | None` field defaulting to None."

@@ -265,6 +265,20 @@ def related_class_repair_model(class_names: List[str]) -> type[BaseModel]:
     return create_model("RelatedClassRepair", __config__=ConfigDict(extra="forbid"), **fields)
 
 
+class ProseChange(BaseModel):
+    """Targeted plan repair: a planned change that was written as code, restated in prose."""
+    model_config = ConfigDict(extra="forbid")
+    change: str = _text(160, "One sentence of prose: the concrete behavior that must change. No code.")
+    details: str = _text(200, "One sentence of prose: fields, parameters, validation or return values. No code.")
+    preserves: str = _text(160, "One sentence of prose: how existing behavior and callers keep working. No code.")
+
+
+def prose_rewrite_model(count: int) -> type[BaseModel]:
+    """One required rewrite per flagged change (change_1 ... change_N), so none can be skipped."""
+    fields = {f"change_{i}": (ProseChange, Field(description=f"Rewrite of entry {i}.")) for i in range(1, count + 1)}
+    return create_model("ProseRewrite", __config__=ConfigDict(extra="forbid"), **fields)
+
+
 def _shown(model: type[BaseModel], field: str, text: str) -> str:
     """Text as stored, visibly marked when decoding stopped it at the schema's length limit."""
     limit = next((m.max_length for m in model.model_fields[field].metadata if hasattr(m, "max_length")), None)
