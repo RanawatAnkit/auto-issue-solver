@@ -191,7 +191,9 @@ def run_agent(workspace: str, task: dict, trace: dict,
     from app.services.repository_scanner import list_tracked_files
 
     statement = task["problem_statement"].strip()
-    title = statement.split("\n", 1)[0][:200]
+    # SWE-bench statements are the issue's title line followed by its body.
+    first_line, _, rest = statement.partition("\n")
+    title, body = first_line.strip()[:200], rest.strip() or statement
     tracked = list_tracked_files(workspace)
 
     def record(action_type, _input=None, output=None, success=True):
@@ -232,12 +234,13 @@ def run_agent(workspace: str, task: dict, trace: dict,
 
     # No database here: retrieval is lexical over the checkout. Documentation is not graded; editing it
     # only costs LLM calls and time. Feedback tests that cannot run do not stop the task: it is graded anyway.
-    solved = solve_issue(title, statement, "", task["repo"], workspace, tracked, tests_for,
+    solved = solve_issue(title, body, "", task["repo"], workspace, tracked, tests_for,
                          changed_files=lambda: _changed_paths(workspace), skip_target=_is_doc_file,
                          max_repair_attempts=getattr(settings, "EVAL_REPAIR_ATTEMPTS", 2),
                          require_test_environment=False, issue_context=statement, record=record,
                          on_output=on_output)
     trace["skipped_doc_files"] = solved.skipped_targets
+    trace["modified_files"] = solved.modified_files  # what the graded patch is limited to
     if solved.status == NO_VALID_PATCH:
         raise solved.error
     if solved.status not in (NOT_TESTED, TESTS_PASSED, REPAIR_EXHAUSTED):
@@ -371,7 +374,15 @@ class Harness:
             finally:
                 result.analysis, result.plan = trace.get("analysis"), trace.get("plan")
                 result.agent_trace = {k: v for k, v in trace.items() if k not in ("analysis", "plan")}
-            return diff_against(workspace, task["base_commit"])
+            # Like the worker, submit only the files the agent edited; anything else that changed is left out.
+            edited = trace.get("modified_files")
+            if edited is not None:
+                changed = _changed_paths(workspace)
+                ignored = sorted(set(changed) - set(edited))
+                if ignored:
+                    result.agent_trace["ignored_files"] = ignored
+                edited = [p for p in changed if p in set(edited)]
+            return diff_against(workspace, task["base_commit"], paths=edited)
         finally:
             remove_workspace(workspace)
 

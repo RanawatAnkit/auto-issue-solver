@@ -86,7 +86,11 @@ def apply_patch(workspace: str, patch: str) -> None:
         git(workspace, "apply", "--whitespace=nowarn", "--3way", "-", input_text=patch)
 
 
-def diff_against(workspace: str, commit: str) -> str:
-    """Everything that changed in the working copy since `commit`, including new files."""
-    git(workspace, "add", "-A")
-    return git(workspace, "diff", "--cached", "--binary", commit)
+def diff_against(workspace: str, commit: str, paths: list[str] | None = None) -> str:
+    """Everything that changed in the working copy since `commit`, including new files
+    (only under `paths` when given)."""
+    if paths is not None and not paths:
+        return ""
+    pathspec = ["--", *paths] if paths else []
+    git(workspace, "add", "-A", *pathspec)
+    return git(workspace, "diff", "--cached", "--binary", commit, *pathspec)

@@ -487,3 +487,33 @@ def test_run_agent_runs_existing_tests_before_and_after_the_change(tmp_path, mon
     # The only failure was already there before the change: passed, and no repair.
     assert trace["feedback"]["test_result"]["outcome"] == "PASSED" and repairs == []
     assert trace["feedback"]["test_result"]["preexisting_failures"] == ["tests/test_calc.py::test_flaky"]
+
+
+def test_statement_title_and_body_are_split_like_an_issue(tmp_path, monkeypatch):
+    seen = {}
+
+    def solve(title, body, *a, **k):
+        seen.update(title=title, body=body, context=k["issue_context"])
+        from app.agents.pipeline import SolveResult, NOT_TESTED
+        return SolveResult(NOT_TESTED, None, None, {})
+    monkeypatch.setattr("app.agents.pipeline.solve_issue", solve)
+    monkeypatch.setattr("app.services.repository_scanner.list_tracked_files", lambda ws: [])
+    harness.run_agent(str(tmp_path), {"repo": "x/y", "problem_statement": "add() subtracts\n\nadd(1, 1) is 0\n"}, {})
+    assert seen == {"title": "add() subtracts", "body": "add(1, 1) is 0", "context": "add() subtracts\n\nadd(1, 1) is 0"}
+    harness.run_agent(str(tmp_path), {"repo": "x/y", "problem_statement": "only a title"}, {})
+    assert seen["body"] == "only a title"
+
+
+def test_graded_patch_holds_only_the_files_the_agent_edited(benchmark):
+    cache, task = benchmark
+
+    def agent(ws, t, trace, run_tests=None):
+        with open(os.path.join(ws, "calc.py"), "w", newline="\n") as f:
+            f.write("def add(a, b):\n    return a + b\n")
+        with open(os.path.join(ws, "stray.log"), "w") as f:
+            f.write("written by something else\n")
+        trace["modified_files"] = ["calc.py"]
+
+    result = _harness(cache, agent=agent).evaluate(task)
+    assert result.outcome == harness.RESOLVED and "calc.py" in result.patch and "stray.log" not in result.patch
+    assert result.agent_trace["ignored_files"] == ["stray.log"]
