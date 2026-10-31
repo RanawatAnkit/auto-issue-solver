@@ -385,7 +385,7 @@ def test_run_agent_runs_its_own_tests_and_repairs_on_failure(tmp_path, monkeypat
     assert trace["stages"]["localization"]["success"] and "context_files" in trace
     assert coded["targets"] == ["calc.py", "tests/test_calc.py"] and trace["skipped_doc_files"] == ["README.md"]
     assert ran == [["tests/test_calc.py"]]
-    assert trace["feedback"]["outcome"] == "TESTS_FAILED"
+    assert trace["feedback"]["test_result"]["outcome"] == "TESTS_FAILED"
     assert repairs["first"] == "TESTS_FAILED" and repairs["runner"].test_files == ["tests/test_calc.py"]
     assert trace["repair"]["status"] == "REPAIR_SUCCESS" and trace["repair"]["final_outcome"] == "PASSED"
 
@@ -425,3 +425,65 @@ def test_run_agent_stops_like_the_worker_when_planning_modifies_the_checkout(tmp
     with pytest.raises(RuntimeError, match="WORKSPACE_MODIFIED_DURING_PLANNING"):
         harness.run_agent(str(ws), {"instance_id": "x", "repo": "pallets/flask", "problem_statement": "add"}, trace)
     assert coded == [] and trace["plan"]["summary"] == "fix add"
+
+
+def test_related_tests_are_found_by_name_and_by_import(tmp_path):
+    from app.eval.feedback import related_test_files
+    files = {"src/calc/ops.py": "", "src/calc/__init__.py": "",
+             "tests/test_ops.py": "", "tests/test_api.py": "from calc.ops import add\n",
+             "tests/test_pkg.py": "from calc import ops\n", "tests/test_other.py": "import json\n",
+             "tests/conftest.py": "from calc.ops import add\n"}
+    for path, text in files.items():
+        (tmp_path / path).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / path).write_text(text)
+    assert related_test_files(["src/calc/ops.py"], files, str(tmp_path)) == [
+        "tests/test_ops.py", "tests/test_api.py", "tests/test_pkg.py"]
+
+
+def test_failures_already_present_before_the_change_do_not_count():
+    from app.eval.feedback import FeedbackRunner
+    log = "PASSED tests/test_a.py::test_ok\nFAILED tests/test_a.py::test_old - assert 0\n1 failed, 1 passed"
+    run = lambda ws, files: TestRun(log=log, exit_code=1, timed_out=False, duration_seconds=0.1)
+    res = FeedbackRunner(run, ".", ["tests/test_a.py"], preexisting={"tests/test_a.py::test_old"}).run_tests()
+    assert res["success"] and res["preexisting_failures"] == ["tests/test_a.py::test_old"]
+    assert res["stdout"].startswith("NOTE: 1 test(s) already failed before the change")
+    new = FeedbackRunner(run, ".", ["tests/test_a.py"]).run_tests()
+    assert not new["success"] and new["outcome"] == "TESTS_FAILED"
+
+
+def test_run_agent_runs_existing_tests_before_and_after_the_change(tmp_path, monkeypatch):
+    from app.agents.schemas import IssueAnalysis, SolutionPlan, FileChangePlan
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    git(str(ws), "init", "-q")
+    (ws / "calc.py").write_text("def add(a, b):\n    return a - b\n", newline="\n")
+    (ws / "tests").mkdir()
+    (ws / "tests" / "test_calc.py").write_text("from calc import add\n", newline="\n")
+    _commit_all(str(ws), "base")
+    analysis = IssueAnalysis(problem_summary="add subtracts", expected_behavior="sum", current_behavior="difference")
+    monkeypatch.setattr("app.agents.issue_analyzer.IssueAnalyzer.analyze", lambda self, *a, **k: analysis)
+    monkeypatch.setattr("app.agents.localizer.Localizer.localize", lambda self, *a, **k: None)
+    plan = SolutionPlan(summary="fix add", acceptance_criteria=["add(2,2)==4"],
+                        affected_files=[FileChangePlan(path="calc.py", operation="modify", reason="bug")])
+    monkeypatch.setattr("app.agents.planner.PlannerAgent.create_plan", lambda self, *a, **k: plan)
+    monkeypatch.setattr("app.agents.coding_agent.CodingAgent.implement",
+                        lambda self, *a, **k: {"changed_files": ["calc.py"], "summary": ""})
+    repairs = []
+    monkeypatch.setattr("app.agents.pipeline.execute_repair_loop", lambda *a, **k: repairs.append(k))
+
+    logs = iter(["PASSED tests/test_calc.py::test_mul\nFAILED tests/test_calc.py::test_flaky - x\n",
+                 "PASSED tests/test_calc.py::test_mul\nFAILED tests/test_calc.py::test_flaky - x\n"])
+    ran = []
+
+    def run_tests(workspace, files):
+        ran.append(files)
+        return TestRun(log=next(logs), exit_code=1, timed_out=False, duration_seconds=0.1)
+
+    trace = {}
+    harness.run_agent(str(ws), {"instance_id": "x", "repo": "pallets/flask", "problem_statement": "add"},
+                      trace, run_tests)
+    assert ran == [["tests/test_calc.py"], ["tests/test_calc.py"]]  # baseline, then after the change
+    assert trace["feedback"]["baseline"]["outcome"] == "TESTS_FAILED"
+    # The only failure was already there before the change: passed, and no repair.
+    assert trace["feedback"]["test_result"]["outcome"] == "PASSED" and repairs == []
+    assert trace["feedback"]["test_result"]["preexisting_failures"] == ["tests/test_calc.py::test_flaky"]

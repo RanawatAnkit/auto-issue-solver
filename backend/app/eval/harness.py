@@ -28,6 +28,7 @@ import openai
 from app.config import settings
 from app.eval import grading
 from app.eval.environments import UnsupportedTask, spec_for
+from app.eval.feedback import FeedbackRunner, related_test_files
 from app.eval.repos import GitError, RepoCache, apply_patch, diff_against, git, remove_workspace
 from app.eval.sandbox import EnvironmentFailure, EvalSandbox
 from app.services.llm_service import (
@@ -165,29 +166,6 @@ def _is_doc_file(path: str) -> bool:
     return path.lower().endswith(_DOC_SUFFIXES) or path.startswith(("docs/", "doc/")) or name.startswith("CHANGES")
 
 
-class FeedbackRunner:
-    """TestRunner-shaped wrapper (the interface the repair loop expects) around the task's Docker environment."""
-
-    def __init__(self, run_tests: Callable[[str, list[str]], "TestRun"], workspace: str, test_files: list[str]):
-        self._run, self.workspace, self.test_files = run_tests, workspace, test_files
-
-    def run_tests(self, *_args, **_kwargs) -> dict:
-        from app.sandbox.test_runner import (ENVIRONMENT_ERROR, PASSED, TIMEOUT, _summary_counts,
-                                             classify_pytest_result)
-        from app.services.repository_scanner import list_tracked_files
-        command = ["pytest", "-rA", *self.test_files]
-        try:
-            run = self._run(self.workspace, self.test_files)
-        except EnvironmentFailure as e:
-            return {"success": False, "outcome": ENVIRONMENT_ERROR, "exit_code": 127, "stdout": "",
-                    "stderr": str(e)[-3000:], "summary": {}, "command": command}
-        outcome = TIMEOUT if run.timed_out else classify_pytest_result(
-            run.exit_code, run.log, list_tracked_files(self.workspace))
-        return {"success": outcome == PASSED, "outcome": outcome, "exit_code": run.exit_code,
-                "stdout": run.log[-100_000:], "stderr": "", "summary": _summary_counts(run.log),
-                "command": command, "duration_seconds": run.duration_seconds}
-
-
 def _changed_paths(workspace: str) -> list[str]:
     """Paths that differ from HEAD in a checkout, new untracked files included."""
     return [line[3:] for line in git(workspace, "status", "--porcelain", "--untracked-files=all").splitlines()
@@ -202,9 +180,11 @@ def run_agent(workspace: str, task: dict, trace: dict,
     Each stage's output is put in `trace` as soon as it exists, so a run that fails
     later (e.g. in code generation) still records the analysis and plan it worked from.
 
-    If the agent wrote or changed tests and `run_tests` is given, those tests run on
-    its change in the task's environment, and failures go through the same bounded
-    repair loop the worker uses. The benchmark's hidden tests are never used here.
+    With `run_tests`, the repository's existing tests near the planned files run on the
+    untouched checkout (the baseline) and again after the change, together with any tests
+    the agent wrote; new failures go through the same bounded repair loop the worker uses,
+    while tests that already failed at the baseline do not count. The benchmark's hidden
+    tests are never used here.
     """
     from app.agents.pipeline import solve_issue, NO_VALID_PATCH, NOT_TESTED, TESTS_PASSED, REPAIR_EXHAUSTED
     from app.agents.planner import is_test_file
@@ -223,31 +203,49 @@ def run_agent(workspace: str, task: dict, trace: dict,
     def on_output(name, value):
         if name in ("analysis", "plan"):
             trace[name] = value
-        elif name == "test_result":
-            trace["feedback"].update(outcome=value["outcome"], summary=value["summary"])
+        elif name in ("baseline", "test_result"):
+            trace["feedback"][name] = {k: value.get(k) for k in ("outcome", "summary", "preexisting_failures")}
+
+    baseline_runner = None
 
     def tests_for(changed):
-        # Only the tests the agent itself wrote or changed; none exist before its change, so no baseline.
-        own_tests = [p for p in changed if p.endswith(".py") and is_test_file(p)]
-        if run_tests is None or not own_tests:
+        nonlocal baseline_runner
+        if run_tests is None:
             return None
-        trace["feedback"] = {"ran": True, "test_files": own_tests}
-        return FeedbackRunner(run_tests, workspace, own_tests)
+        if not changed:
+            # Before the change: existing tests for the planned files, as the baseline.
+            planned = [f["path"] for f in trace["plan"]["affected_files"] if f["operation"] != "create"]
+            related = related_test_files(planned, tracked, workspace)
+            trace["feedback"] = {"ran": bool(related), "baseline_files": related}
+            baseline_runner = FeedbackRunner(run_tests, workspace, related) if related else None
+            return baseline_runner
+        files = []
+        if baseline_runner is not None and baseline_runner.statuses:  # the baseline could run them
+            files += baseline_runner.test_files
+        files += [p for p in changed if p.endswith(".py") and is_test_file(p)]  # the agent's own tests
+        files = list(dict.fromkeys(files))
+        if not files:
+            return None
+        trace["feedback"].update(ran=True, test_files=files)
+        return FeedbackRunner(run_tests, workspace, files,
+                              preexisting=baseline_runner.failing if baseline_runner else ())
 
     # No database here: retrieval is lexical over the checkout. Documentation is not graded; editing it
-    # only costs LLM calls and time.
+    # only costs LLM calls and time. Feedback tests that cannot run do not stop the task: it is graded anyway.
     solved = solve_issue(title, statement, "", task["repo"], workspace, tracked, tests_for,
                          changed_files=lambda: _changed_paths(workspace), skip_target=_is_doc_file,
                          max_repair_attempts=getattr(settings, "EVAL_REPAIR_ATTEMPTS", 2),
-                         issue_context=statement, record=record, on_output=on_output)
+                         require_test_environment=False, issue_context=statement, record=record,
+                         on_output=on_output)
     trace["skipped_doc_files"] = solved.skipped_targets
     if solved.status == NO_VALID_PATCH:
         raise solved.error
     if solved.status not in (NOT_TESTED, TESTS_PASSED, REPAIR_EXHAUSTED):
         raise RuntimeError(f"Agent pipeline stopped ({solved.status}): {solved.error}")
     if solved.status == NOT_TESTED:
-        trace["feedback"] = {"ran": False,
-                             "reason": "the agent wrote no tests" if run_tests else "no test environment available"}
+        trace["feedback"] = {**trace.get("feedback", {}), "ran": False,
+                             "reason": "no related or agent-written tests" if run_tests
+                             else "no test environment available"}
     if solved.repair is not None:
         trace["repair"] = {k: solved.repair.get(k) for k in ("status", "attempts", "termination_reason")}
         trace["repair"]["final_outcome"] = (solved.repair.get("test_result") or {}).get("outcome")

@@ -153,12 +153,15 @@ def solve_issue(title: str, body: str, labels, repo_name: str, workspace_path: s
                 tests_for: TestsFor, db=None, repo_id: int = 0, mutate: bool = True,
                 changed_files: Callable[[], List[str]] | None = None,
                 skip_target: Callable[[str], bool] | None = None, max_repair_attempts: int | None = None,
-                run_id: int = 0, issue_context: str | None = None, record: Recorder | None = None,
+                require_test_environment: bool = True, run_id: int = 0, issue_context: str | None = None,
+                record: Recorder | None = None,
                 on_stage: StageCallback | None = None, on_output: OutputCallback | None = None) -> SolveResult:
     """Solve one issue on a checkout; edits land in `workspace_path`.
 
     changed_files: lists the checkout's changes, to check that planning left it untouched (None: not checked).
     skip_target: planned files not to edit (e.g. documentation), unless every target is one.
+    require_test_environment: stop with ENVIRONMENT_FAILURE when the baseline tests cannot run (False: go on;
+        tests_for then decides what still runs).
     issue_context: the issue as the repair loop sees it (default: title and body).
     Raises whatever analysis or planning raises; a change that cannot be applied is NO_VALID_PATCH.
     """
@@ -203,7 +206,7 @@ def solve_issue(title: str, body: str, labels, repo_name: str, workspace_path: s
         on_output("baseline", baseline)
         record("baseline_tests", baseline.get("command"), test_evidence(baseline),
                success=bool(baseline.get("success")))
-        if baseline.get("outcome") in ENVIRONMENT_OUTCOMES:
+        if baseline.get("outcome") in ENVIRONMENT_OUTCOMES and require_test_environment:
             result.status = ENVIRONMENT_FAILURE
             result.error = RuntimeError(f"Tests could not run on the unmodified repository "
                                         f"({baseline.get('outcome')}): {(baseline.get('stderr') or '')[-1500:]}")
