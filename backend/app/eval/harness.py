@@ -206,7 +206,8 @@ def run_agent(workspace: str, task: dict, trace: dict,
         if name in ("analysis", "plan"):
             trace[name] = value
         elif name in ("baseline", "test_result"):
-            trace["feedback"][name] = {k: value.get(k) for k in ("outcome", "summary", "preexisting_failures")}
+            trace["feedback"][name] = {k: value.get(k) for k in ("outcome", "summary", "preexisting_failures",
+                                                            "failing_tests")}
 
     baseline_runner = None
 

@@ -87,7 +87,7 @@ def sandbox_container_kwargs(image: str, command: list, network: bool = False) -
     )
 
 
-_SUMMARY_LINE_RE = re.compile(r"^=*\s*(\d+ \w+(?:, \d+ \w+)*) in [\d.]+s", re.M)
+_SUMMARY_LINE_RE = re.compile(r"^=*\s*(\d+ \w+(?:, \d+ \w+)*) in [\d.]+ ?s", re.M)  # "0.9s", "0.90 seconds"
 
 
 def _summary_counts(output: str) -> dict:

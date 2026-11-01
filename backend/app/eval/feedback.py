@@ -109,4 +109,4 @@ class FeedbackRunner:
                    f"issue and need no fix: {', '.join(known[:20])}\n\n{log}")
         return {"success": outcome == PASSED, "outcome": outcome, "exit_code": run.exit_code,
                 "stdout": log, "stderr": "", "summary": _summary_counts(run.log),
-                "preexisting_failures": known, "command": command, "duration_seconds": run.duration_seconds}
+                "preexisting_failures": known, "failing_tests": sorted(failing)[:50], "command": command, "duration_seconds": run.duration_seconds}

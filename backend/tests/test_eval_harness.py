@@ -527,3 +527,40 @@ def test_counts_come_from_the_final_summary_not_from_pytest_runs_inside_tests():
            "=========================== 35 passed in 3.10s ===========================\n")
     assert _summary_counts(log) == {"passed": 35}
     assert _summary_counts("1 failed, 2 passed in 0.12s\n") == {"failed": 1, "passed": 2}
+    # Older pytest prints "seconds".
+    assert _summary_counts("=== 1 failed in 0.01 seconds ===\n=== 34 passed in 0.90 seconds ===\n") == {"passed": 34}
+
+
+def test_gold_changes_maps_edits_and_insertions_to_original_lines():
+    from app.eval.retrieval import gold_changes
+    patch = ("diff --git a/src/pkg/mod.py b/src/pkg/mod.py\n--- a/src/pkg/mod.py\n+++ b/src/pkg/mod.py\n"
+             "@@ -10,4 +10,5 @@ def f():\n     a = 1\n-    b = 2\n+    b = 3\n+    c = 4\n     return a\n"
+             "--- comment-like removed line is content, not a header\n"
+             "diff --git a/tests/test_mod.py b/tests/test_mod.py\n--- a/tests/test_mod.py\n+++ b/tests/test_mod.py\n"
+             "@@ -1,1 +1,2 @@\n x\n+y\n")
+    # 11: the edited line and the insertions after it; 13: the "--- ..." line is a removal inside the hunk.
+    assert gold_changes(patch) == {"src/pkg/mod.py": {11, 13}}  # test files are not gold code
+
+
+def test_retrieval_ranks_the_gold_file_and_symbol(tmp_path, monkeypatch):
+    from app.eval import retrieval
+    ws = tmp_path / "ws"
+    (ws / "pkg").mkdir(parents=True)
+    git(str(ws), "init", "-q")
+    (ws / "pkg" / "calc.py").write_text("def add(a, b):\n    return a - b\n\n\ndef mul(a, b):\n    return a * b\n",
+                                        newline="\n")
+    (ws / "pkg" / "other.py").write_text("def unrelated():\n    return 0\n", newline="\n")
+    base = _commit_all(str(ws), "base")
+
+    class Repos:
+        def checkout(self, repo, commit):
+            return str(ws)
+    monkeypatch.setattr(retrieval, "remove_workspace", lambda p: None)
+    task = {"instance_id": "x", "repo": "r", "base_commit": base,
+            "problem_statement": "`add` subtracts\n\nCalling add(2, 2) returns 0.",
+            "patch": ("diff --git a/pkg/calc.py b/pkg/calc.py\n--- a/pkg/calc.py\n+++ b/pkg/calc.py\n"
+                      "@@ -1,2 +1,2 @@\n def add(a, b):\n-    return a - b\n+    return a + b\n")}
+    r = retrieval.evaluate_task(task, Repos())
+    assert r.gold_files == ["pkg/calc.py"] and r.file_rank == 1
+    assert r.symbol_ranks == {"pkg/calc.py::add": 1} and r.seed_hit
+    assert retrieval.summarize([r])["file_recall@1"] == 100.0
