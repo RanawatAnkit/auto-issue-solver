@@ -517,3 +517,13 @@ def test_graded_patch_holds_only_the_files_the_agent_edited(benchmark):
     result = _harness(cache, agent=agent).evaluate(task)
     assert result.outcome == harness.RESOLVED and "calc.py" in result.patch and "stray.log" not in result.patch
     assert result.agent_trace["ignored_files"] == ["stray.log"]
+
+
+def test_counts_come_from_the_final_summary_not_from_pytest_runs_inside_tests():
+    from app.sandbox.test_runner import _summary_counts
+    log = ("PASSED testing/test_a.py::test_inner\n"
+           "----- Captured stdout call -----\n"
+           "============ 1 failed, 1 error in 0.05s ============\n"
+           "=========================== 35 passed in 3.10s ===========================\n")
+    assert _summary_counts(log) == {"passed": 35}
+    assert _summary_counts("1 failed, 2 passed in 0.12s\n") == {"failed": 1, "passed": 2}

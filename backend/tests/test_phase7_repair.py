@@ -185,3 +185,21 @@ def test_missing_declared_dependency_points_repair_at_requirements():
     assert manifest == "requirements.txt"
     assert "flask" in note and "server" not in note.split("module(s):")[1].split(".")[0]
     assert _dependency_hint({"outcome": "TESTS_FAILED", "stdout": "No module named 'flask'"}, set()) == ("", None)
+
+
+def test_failing_existing_tests_are_flagged_as_possibly_asserting_the_old_behavior(workspace, agents):
+    agents["runner"].run_tests.return_value = PASSING
+    ctx = _ctx(_failing("tests/test_calc.py::test_add"), tracked_files=["calc.py", "tests/test_calc.py"],
+               modified_files=["calc.py"])
+    execute_repair_loop(1, ctx, workspace_path=workspace)
+    kwargs = agents["analyzer"].generate_analysis.call_args.kwargs
+    assert kwargs["test_output"].startswith("NOTE: failing tests in files that existed before this change: "
+                                            "tests/test_calc.py.")
+    assert "def test_add" in kwargs["code_context"]  # the model sees the test it may have to update
+
+
+def test_tests_the_agent_wrote_are_not_flagged_as_existing(workspace, agents):
+    agents["runner"].run_tests.return_value = PASSING
+    ctx = _ctx(_failing("tests/test_calc.py::test_add"), tracked_files=["calc.py"])
+    execute_repair_loop(1, ctx, workspace_path=workspace)
+    assert "NOTE: failing tests" not in agents["analyzer"].generate_analysis.call_args.kwargs["test_output"]

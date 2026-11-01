@@ -59,6 +59,26 @@ def _dependency_hint(test_result: dict, tracked: set) -> tuple[str, str | None]:
     return note, manifest
 
 
+_FAILED_TEST_RE = re.compile(r"^(?:FAILED|ERROR) ([\w./-]+\.py)::", re.M)
+
+
+def _existing_test_hint(test_result: dict, existing: set) -> tuple[str, List[str]]:
+    """For failures in tests that were there before the change: a note for the model and their files.
+
+    An issue that asks for new behavior makes the tests asserting the old behavior fail. Told only
+    that tests fail, the model reverts the fix or changes nothing until the attempts run out.
+    """
+    output = (test_result.get("stdout") or "") + "\n" + (test_result.get("stderr") or "")
+    files = sorted({f for f in _FAILED_TEST_RE.findall(output) if f in existing})
+    if not files:
+        return "", []
+    note = (f"NOTE: failing tests in files that existed before this change: {', '.join(files)}. If such a test "
+            f"asserts the old behavior that the issue explicitly asks to change, update the test to expect the "
+            f"new behavior; do not undo the fix to make it pass. If it checks something the issue does not "
+            f"change, the change broke it: fix the source.\n\n")
+    return note, files
+
+
 def _is_environment_failure(test_result: dict, baseline: dict | None) -> bool:
     verification = test_result.get("verification")
     if isinstance(verification, dict) and verification.get("valid") is False:
@@ -98,6 +118,8 @@ def execute_repair_loop(run_id: int, initial_context: dict, workspace_path: str 
     baseline = initial_context.get("baseline_test_result")
     modified_files: List[str] = list(initial_context.get("modified_files") or [])
     tracked_files = initial_context.get("tracked_files") or list_tracked_files(workspace_path)
+    # Test files from before the run (tracked_files is listed before any code generation).
+    existing_tests = {p for p in tracked_files if is_test_file(p)}
 
     analyzer = FailureAnalyzer()
     planner = RepairPlanner()
@@ -127,8 +149,11 @@ def execute_repair_loop(run_id: int, initial_context: dict, workspace_path: str 
 
         tracked_now = set(list_tracked_files(workspace_path)) | set(modified_files)
         dep_note, manifest = _dependency_hint(last_test_res, tracked_now)
-        test_output = dep_note + (last_test_res.get("stdout") or "") + "\n" + (last_test_res.get("stderr") or "")
+        test_note, failing_tests = _existing_test_hint(last_test_res, existing_tests)
+        test_output = (dep_note + test_note + (last_test_res.get("stdout") or "") + "\n"
+                       + (last_test_res.get("stderr") or ""))
         tb_files = _traceback_files(last_test_res, tracked_now)
+        tb_files += [f for f in failing_tests if f not in tb_files]
         code_context, _ = files_block(workspace_path, ([manifest] if manifest else []) + modified_files + tb_files, 12000)
         attempt_record: Dict[str, Any] = {"attempt": attempt}
 

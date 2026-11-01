@@ -87,10 +87,17 @@ def sandbox_container_kwargs(image: str, command: list, network: bool = False) -
     )
 
 
+_SUMMARY_LINE_RE = re.compile(r"^=*\s*(\d+ \w+(?:, \d+ \w+)*) in [\d.]+s", re.M)
+
+
 def _summary_counts(output: str) -> dict:
+    # Only pytest's final summary line: earlier ones can come from pytest runs inside the tests
+    # (e.g. pytest's own suite), whose counts are not this run's.
+    lines = _SUMMARY_LINE_RE.findall(output)
+    text = lines[-1] if lines else output
     counts = {}
     for key in ("passed", "failed", "error", "errors", "skipped", "xfailed"):
-        m = re.findall(rf"(\d+) {key}\b", output)
+        m = re.findall(rf"(\d+) {key}\b", text)
         if m:
             counts["errors" if key == "error" else key] = int(m[-1])
     return counts
