@@ -4,6 +4,7 @@
     python -m app.eval validate [IDS...] [--repo R] [--allow-network]   # gold patches: is the env sound?
     python -m app.eval run      [IDS...] [--repo R] [--allow-network]   # the agent
     python -m app.eval report
+    python -m app.eval retrieval [IDS...] [--repo R]                     # does retrieval find the gold code? (no LLM)
 """
 import argparse
 import logging
@@ -48,6 +49,9 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("list", help="list benchmark tasks with their latest results")
     sub.add_parser("report", help="print headline numbers")
+    p = sub.add_parser("retrieval", help="measure whether retrieval finds the code the gold patch changes (no LLM)")
+    p.add_argument("ids", nargs="*", help="instance ids (default: all)")
+    p.add_argument("--repo", help="only tasks from this repository, e.g. pallets/flask")
     for name, help_text in (("run", "run the agent and grade its patches"),
                             ("validate", "grade the reference (gold) patches to check each environment")):
         p = sub.add_parser(name, help=help_text)
@@ -77,6 +81,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     selected = _select(tasks, args.ids, args.repo)
+    if args.command == "retrieval":
+        return _retrieval(selected)
     mode = GOLD if args.command == "validate" else AGENT
     if getattr(args, "pending", False):
         selected = pending_tasks(selected, store)
@@ -102,6 +108,24 @@ def main(argv: list[str] | None = None) -> int:
         print(f"\nBatch stopped early. {stopped}")
     _print_summary(tasks, store)
     return 1 if stopped else 0
+
+
+def _retrieval(tasks: list[dict]) -> int:
+    from app.eval import retrieval
+
+    def show(r):
+        if r.error:
+            print(f"  {r.instance_id:<34} ERROR {r.error}", flush=True)
+            return
+        syms = ", ".join(f"{name.split('::')[-1]}@{rank or '-'}" for name, rank in r.symbol_ranks.items()) or "-"
+        print(f"  {r.instance_id:<34} file rank {r.file_rank or '-':>2}  ({r.files_found}/{len(r.gold_files)} files, "
+              f"{r.chunks} chunks)  symbols: {syms}" + ("  [hint]" if r.seed_hit else ""), flush=True)
+
+    print(f"Retrieval on {len(tasks)} task(s); rank = position in the context the planner sees (- = not retrieved)")
+    _, summary, path = retrieval.run(tasks, settings.EVAL_CACHE_DIR, settings.EVAL_RESULTS_DIR, on_result=show)
+    print("\n" + "  ".join(f"{k}={v}" for k, v in summary.items()))
+    print(f"Saved {path}")
+    return 0
 
 
 if __name__ == "__main__":
